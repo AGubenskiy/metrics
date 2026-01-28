@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"runtime"
@@ -98,13 +99,25 @@ func (a *Agent) report() {
 		url := fmt.Sprintf("%s/update/gauge/%s/%f", a.serverAddr, name, value)
 		req, _ := http.NewRequest(http.MethodPost, url, nil)
 		req.Header.Set("Content-Type", "text/plain")
-		client.Do(req)
+		//client.Do(req)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
 
 	for name, value := range a.counters {
 		url := fmt.Sprintf("%s/update/counter/%s/%d", a.serverAddr, name, value)
 		req, _ := http.NewRequest(http.MethodPost, url, nil)
 		req.Header.Set("Content-Type", "text/plain")
-		client.Do(req)
+		//client.Do(req)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
 }
