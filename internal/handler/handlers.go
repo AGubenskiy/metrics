@@ -46,6 +46,7 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		//log.Println("Updating metric", metricName, metricType, value)
 		_ = h.storage.UpdateGauge(metricName, value)
 
 	case "counter":
@@ -54,6 +55,7 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		//log.Println("Updating metric", metricName, metricType, value)
 		_ = h.storage.UpdateCounter(metricName, value)
 
 	default:
