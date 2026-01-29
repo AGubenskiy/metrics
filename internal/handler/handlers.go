@@ -71,7 +71,7 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 // Инкремент 3
 func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.NotFound(w, r)
 		return
 	}
 
@@ -111,7 +111,7 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) GetAllMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.NotFound(w, r)
 		return
 	}
 
