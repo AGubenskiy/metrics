@@ -13,6 +13,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/update/", handler.UpdateMetric)
+	mux.HandleFunc("/value/", handler.GetMetricValue)
+	mux.HandleFunc("/", handler.GetAllMetrics)
 
 	log.Println("Server started on http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
