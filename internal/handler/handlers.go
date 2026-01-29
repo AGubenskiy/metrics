@@ -18,7 +18,7 @@ func NewHandler(s storage.Storage) *Handler {
 
 func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
+		http.NotFound(w, r)
 		return
 	}
 
