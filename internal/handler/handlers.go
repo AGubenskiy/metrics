@@ -152,19 +152,68 @@ func (h *Handler) GetAllMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 
-	w.Write([]byte("<html><body><h1>Все метрики:</h1>"))
+	fmt.Fprint(w, `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Metrics</title>
+	<style>
+		body {
+			font-family: Arial, sans-serif;
+			padding: 10px;
+		}
+		h1 {
+			margin-bottom: 10px;
+		}
+		table {
+			border-collapse: collapse;
+			margin-bottom: 30px;
+			min-width: 400px;
+		}
+		th, td {
+			border: 1px solid #ccc;
+			padding: 8px 12px;
+			text-align: left;
+		}
+		th {
+			background-color: #CEE0CC;
+		}
+	</style>
+</head>
+<body>
 
+<h1>Metrics</h1>
+`)
+
+	// Gauge
+	fmt.Fprint(w, "<h2>Gauge</h2>")
+	fmt.Fprint(w, "<table><tr><th>Name</th><th>Value</th></tr>")
 	for name, value := range gauges {
-		w.Write([]byte(
-			fmt.Sprintf("<br>gauge %s = %f</br>", name, value),
-		))
+		fmt.Fprintf(
+			w,
+			"<tr><td>%s</td><td>%f</td></tr>",
+			name,
+			value,
+		)
 	}
+	fmt.Fprint(w, "</table>")
 
+	// Counter
+	fmt.Fprint(w, "<h2>Counter</h2>")
+	fmt.Fprint(w, "<table><tr><th>Name</th><th>Value</th></tr>")
 	for name, value := range counters {
-		w.Write([]byte(
-			fmt.Sprintf("<br>counter %s = %d</br>", name, value),
-		))
+		fmt.Fprintf(
+			w,
+			"<tr><td>%s</td><td>%d</td></tr>",
+			name,
+			value,
+		)
 	}
+	fmt.Fprint(w, "</table>")
 
-	w.Write([]byte("</body></html>"))
+	fmt.Fprint(w, `
+</body>
+</html>
+`)
 }
