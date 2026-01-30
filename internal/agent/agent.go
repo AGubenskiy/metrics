@@ -18,11 +18,11 @@ type Agent struct {
 	counters map[string]int64
 }
 
-func NewAgent(serverAddr string) *Agent {
+func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
 	return &Agent{
 		serverAddr:     serverAddr,
-		pollInterval:   2 * time.Second,
-		reportInterval: 10 * time.Second,
+		pollInterval:   time.Duration(pollInterval) * time.Second,
+		reportInterval: time.Duration(reportInterval) * time.Second,
 		gauges:         make(map[string]float64),
 		counters:       make(map[string]int64),
 	}

@@ -148,7 +148,6 @@ func TestGetMetricValue(t *testing.T) {
 func TestGetAllMetrics(t *testing.T) {
 	router := setupRouter()
 
-	// добавим пару метрик
 	router.ServeHTTP(
 		httptest.NewRecorder(),
 		httptest.NewRequest(http.MethodPost, "/update/gauge/testGauge/5.5", nil),
