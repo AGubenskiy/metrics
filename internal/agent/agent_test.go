@@ -3,7 +3,7 @@ package agent
 import "testing"
 
 func TestPollIncrementsCounter(t *testing.T) {
-	a := NewAgent("http://localhost:8080")
+	a := NewAgent("http://localhost:8080", 10, 5)
 
 	a.poll()
 	a.poll()
