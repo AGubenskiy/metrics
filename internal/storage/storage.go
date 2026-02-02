@@ -56,6 +56,16 @@ func (m *MemStorage) GetCounter(name string) (int64, bool) {
 func (m *MemStorage) GetAll() (map[string]float64, map[string]int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.gauges, m.counters
+	//return m.gauges, m.counters
+	gaugesOut := make(map[string]float64, len(m.gauges))
+	for k, v := range m.gauges {
+		gaugesOut[k] = v
+	}
 
+	countersOut := make(map[string]int64, len(m.counters))
+	for k, v := range m.counters {
+		countersOut[k] = v
+	}
+
+	return gaugesOut, countersOut
 }

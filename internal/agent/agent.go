@@ -93,7 +93,7 @@ func (a *Agent) report() {
 		req.Header.Set("Content-Type", "text/plain")
 		//client.Do(req)
 		resp, err := a.httpClient.Do(req)
-		if err != nil {
+		if err != nil || resp == nil {
 			continue
 		}
 		io.Copy(io.Discard, resp.Body)
@@ -108,7 +108,7 @@ func (a *Agent) report() {
 		}
 		req.Header.Set("Content-Type", "text/plain")
 		resp, err := a.httpClient.Do(req)
-		if err != nil {
+		if err != nil || resp == nil {
 			continue
 		}
 		io.Copy(io.Discard, resp.Body)

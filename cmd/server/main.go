@@ -21,13 +21,7 @@ func main() {
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetric)
 	r.Get("/value/{type}/{name}", handler.GetMetricValue)
 	r.Get("/", handler.GetAllMetrics)
-	//mux := http.NewServeMux()
-	//mux.HandleFunc("/update/", handler.UpdateMetric)
-	//mux.HandleFunc("/value/", handler.GetMetricValue)
-	//mux.HandleFunc("/", handler.GetAllMetrics)
 
 	log.Printf("Server started on http://%s\n", *addr)
-	//log.Fatal(http.ListenAndServe(":8080", mux))
-	//log.Fatal(http.ListenAndServe(":8080", r))
 	log.Fatal(http.ListenAndServe(*addr, r))
 }
