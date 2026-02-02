@@ -14,8 +14,9 @@ type Agent struct {
 	pollInterval   time.Duration
 	reportInterval time.Duration
 
-	gauges   map[string]float64
-	counters map[string]int64
+	gauges     map[string]float64
+	counters   map[string]int64
+	httpClient *http.Client // перенес в структуру
 }
 
 func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
@@ -25,26 +26,16 @@ func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
 		reportInterval: time.Duration(reportInterval) * time.Second,
 		gauges:         make(map[string]float64),
 		counters:       make(map[string]int64),
+		//создаем агента
+		httpClient: &http.Client{
+			Timeout: 5 * time.Second,
+		},
 	}
 }
 
 func (a *Agent) Run() {
 	pollTicker := time.NewTicker(a.pollInterval)
 	reportTicker := time.NewTicker(a.reportInterval)
-	//go func() {
-	//	for {
-	//		a.poll()
-	//		time.Sleep(2 * time.Second)
-	//	}
-	//}()
-	//go func() {
-	//	for {
-	//		a.report()
-	//		time.Sleep(10 * time.Second)
-	//	}
-	//}()
-	//
-	//select {}
 	for {
 		select {
 		//ожидание что в любой канал тикера придет значение
@@ -93,14 +84,15 @@ func (a *Agent) poll() {
 	a.counters["PollCount"]++
 }
 func (a *Agent) report() {
-	client := &http.Client{Timeout: 5 * time.Second}
-
 	for name, value := range a.gauges {
 		url := fmt.Sprintf("%s/update/gauge/%s/%f", a.serverAddr, name, value)
-		req, _ := http.NewRequest(http.MethodPost, url, nil)
+		req, err := http.NewRequest(http.MethodPost, url, nil)
+		if err != nil {
+			continue
+		}
 		req.Header.Set("Content-Type", "text/plain")
 		//client.Do(req)
-		resp, err := client.Do(req)
+		resp, err := a.httpClient.Do(req)
 		if err != nil {
 			continue
 		}
@@ -110,10 +102,12 @@ func (a *Agent) report() {
 
 	for name, value := range a.counters {
 		url := fmt.Sprintf("%s/update/counter/%s/%d", a.serverAddr, name, value)
-		req, _ := http.NewRequest(http.MethodPost, url, nil)
+		req, err := http.NewRequest(http.MethodPost, url, nil)
+		if err != nil {
+			continue
+		}
 		req.Header.Set("Content-Type", "text/plain")
-		//client.Do(req)
-		resp, err := client.Do(req)
+		resp, err := a.httpClient.Do(req)
 		if err != nil {
 			continue
 		}
