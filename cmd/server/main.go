@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"github.com/AGubenskiy/metrics/internal/handler"
+	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 	"log"
 	"net/http"
 	"os"
@@ -31,7 +33,14 @@ func main() {
 
 	store := storage.NewMemStorage()
 	handler := handler.NewHandler(store)
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("cannot initialize logger: %v", err)
+	}
+	defer logger.Sync()
+
 	r := chi.NewRouter()
+	r.Use(loggerMiddleware.WithLogging(logger))
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetric)
 	r.Get("/value/{type}/{name}", handler.GetMetricValue)
 	r.Get("/", handler.GetAllMetrics)
