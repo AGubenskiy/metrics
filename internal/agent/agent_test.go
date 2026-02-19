@@ -37,7 +37,9 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 			t.Fatalf("expected Content-Type application/json, got %q", got)
 		}
 
-		defer r.Body.Close()
+		defer func() {
+			_ = r.Body.Close()
+		}()
 		var m models.Metrics
 		if err := gojson.NewDecoder(r.Body).Decode(&m); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
@@ -49,7 +51,9 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = gojson.NewEncoder(w).Encode(m)
+		if err := gojson.NewEncoder(w).Encode(m); err != nil {
+			t.Fatalf("failed to encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

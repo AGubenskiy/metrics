@@ -35,7 +35,10 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_ = h.storage.UpdateGauge(metricName, value)
+		if err = h.storage.UpdateGauge(metricName, value); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 	case "counter":
 		value, err := strconv.ParseInt(metricValue, 10, 64)
@@ -43,7 +46,10 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_ = h.storage.UpdateCounter(metricName, value)
+		if err = h.storage.UpdateCounter(metricName, value); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 	default:
 		w.WriteHeader(http.StatusBadRequest)
@@ -51,11 +57,15 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	if _, err := w.Write([]byte("OK")); err != nil {
+		return
+	}
 }
 
 func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() {
+		_ = r.Body.Close()
+	}()
 
 	var metric models.Metrics
 	if err := gojson.NewDecoder(r.Body).Decode(&metric); err != nil {
@@ -74,7 +84,10 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "gauge value is required", http.StatusBadRequest)
 			return
 		}
-		_ = h.storage.UpdateGauge(metric.ID, *metric.Value)
+		if err := h.storage.UpdateGauge(metric.ID, *metric.Value); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		value, _ := h.storage.GetGauge(metric.ID)
 		metric.Value = &value
 		metric.Delta = nil
@@ -83,7 +96,10 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "counter delta is required", http.StatusBadRequest)
 			return
 		}
-		_ = h.storage.UpdateCounter(metric.ID, *metric.Delta)
+		if err := h.storage.UpdateCounter(metric.ID, *metric.Delta); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		delta, _ := h.storage.GetCounter(metric.ID)
 		metric.Delta = &delta
 		metric.Value = nil
@@ -93,8 +109,10 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = gojson.NewEncoder(w).Encode(metric)
+	if err := gojson.NewEncoder(w).Encode(metric); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 // Инкремент 3
@@ -110,7 +128,9 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(strconv.FormatFloat(value, 'f', -1, 64)))
+		if _, err := w.Write([]byte(strconv.FormatFloat(value, 'f', -1, 64))); err != nil {
+			return
+		}
 
 	case "counter":
 		value, ok := h.storage.GetCounter(metricName)
@@ -119,7 +139,9 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(strconv.FormatInt(value, 10)))
+		if _, err := w.Write([]byte(strconv.FormatInt(value, 10))); err != nil {
+			return
+		}
 
 	default:
 		w.WriteHeader(http.StatusBadRequest)
@@ -127,7 +149,9 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() {
+		_ = r.Body.Close()
+	}()
 
 	var metric models.Metrics
 	if err := gojson.NewDecoder(r.Body).Decode(&metric); err != nil {
@@ -163,16 +187,15 @@ func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = gojson.NewEncoder(w).Encode(metric)
+	if err := gojson.NewEncoder(w).Encode(metric); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
-func (h *Handler) GetAllMetrics(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) GetAllMetrics(w http.ResponseWriter, _ *http.Request) {
 	gauges, counters := h.storage.GetAll()
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-
-	fmt.Fprint(w, `
+	page := `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -204,36 +227,31 @@ func (h *Handler) GetAllMetrics(w http.ResponseWriter, r *http.Request) {
 <body>
 
 <h1>Metrics</h1>
-`)
+`
 
 	// Gauge
-	fmt.Fprint(w, "<h2>Gauge</h2>")
-	fmt.Fprint(w, "<table><tr><th>Name</th><th>Value</th></tr>")
+	page += "<h2>Gauge</h2>"
+	page += "<table><tr><th>Name</th><th>Value</th></tr>"
 	for name, value := range gauges {
-		fmt.Fprintf(
-			w,
-			"<tr><td>%s</td><td>%f</td></tr>",
-			name,
-			value,
-		)
+		page += fmt.Sprintf("<tr><td>%s</td><td>%f</td></tr>", name, value)
 	}
-	fmt.Fprint(w, "</table>")
+	page += "</table>"
 
 	// Counter
-	fmt.Fprint(w, "<h2>Counter</h2>")
-	fmt.Fprint(w, "<table><tr><th>Name</th><th>Value</th></tr>")
+	page += "<h2>Counter</h2>"
+	page += "<table><tr><th>Name</th><th>Value</th></tr>"
 	for name, value := range counters {
-		fmt.Fprintf(
-			w,
-			"<tr><td>%s</td><td>%d</td></tr>",
-			name,
-			value,
-		)
+		page += fmt.Sprintf("<tr><td>%s</td><td>%d</td></tr>", name, value)
 	}
-	fmt.Fprint(w, "</table>")
-
-	fmt.Fprint(w, `
+	page += "</table>"
+	page += `
 </body>
 </html>
-`)
+`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(page)); err != nil {
+		return
+	}
 }

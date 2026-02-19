@@ -123,6 +123,10 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 	if err != nil || resp == nil {
 		return
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if _, err = io.Copy(io.Discard, resp.Body); err != nil {
+		return
+	}
 }

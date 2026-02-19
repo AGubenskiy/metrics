@@ -32,20 +32,24 @@ func main() {
 	}
 
 	store := storage.NewMemStorage()
-	handler := handler.NewHandler(store)
+	h := handler.NewHandler(store)
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatalf("cannot initialize logger: %v", err)
 	}
-	defer logger.Sync()
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			log.Printf("logger sync error: %v", err)
+		}
+	}()
 
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
-	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetric)
-	r.Post("/update", handler.UpdateMetricJSON)
-	r.Get("/value/{type}/{name}", handler.GetMetricValue)
-	r.Post("/value", handler.GetMetricValueJSON)
-	r.Get("/", handler.GetAllMetrics)
+	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
+	r.Post("/update", h.UpdateMetricJSON)
+	r.Get("/value/{type}/{name}", h.GetMetricValue)
+	r.Post("/value", h.GetMetricValueJSON)
+	r.Get("/", h.GetAllMetrics)
 
 	log.Printf("Server started on http://%s\n", finalAddr)
 	log.Fatal(http.ListenAndServe(finalAddr, r))
