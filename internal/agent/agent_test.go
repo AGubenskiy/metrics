@@ -1,6 +1,13 @@
 package agent
 
-import "testing"
+import (
+	models "github.com/AGubenskiy/metrics/internal/model"
+	gojson "github.com/goccy/go-json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
+	"testing"
+)
 
 func TestPollIncrementsCounter(t *testing.T) {
 	a := NewAgent("http://localhost:8080", 10, 5)
@@ -10,5 +17,68 @@ func TestPollIncrementsCounter(t *testing.T) {
 
 	if a.counters["PollCount"] != 2 {
 		t.Fatalf("expected PollCount = 2, got %d", a.counters["PollCount"])
+	}
+}
+
+func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		metrics []models.Metrics
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected method POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/update" {
+			t.Fatalf("expected path /update, got %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("expected Content-Type application/json, got %q", got)
+		}
+
+		defer r.Body.Close()
+		var m models.Metrics
+		if err := gojson.NewDecoder(r.Body).Decode(&m); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		mu.Lock()
+		metrics = append(metrics, m)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = gojson.NewEncoder(w).Encode(m)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 10, 5)
+	gv := 12.5
+	a.gauges["Alloc"] = gv
+	a.counters["PollCount"] = 3
+
+	a.report()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(metrics) != 2 {
+		t.Fatalf("expected 2 metrics sent, got %d", len(metrics))
+	}
+
+	foundGauge := false
+	foundCounter := false
+	for _, m := range metrics {
+		if m.ID == "Alloc" && m.MType == models.Gauge && m.Value != nil && *m.Value == gv {
+			foundGauge = true
+		}
+		if m.ID == "PollCount" && m.MType == models.Counter && m.Delta != nil && *m.Delta == 3 {
+			foundCounter = true
+		}
+	}
+
+	if !foundGauge || !foundCounter {
+		t.Fatalf("sent metrics mismatch: %+v", metrics)
 	}
 }

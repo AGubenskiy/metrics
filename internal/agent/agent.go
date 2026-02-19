@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"fmt"
+	models "github.com/AGubenskiy/metrics/internal/model"
+	gojson "github.com/goccy/go-json"
 	"io"
 	"math/rand"
 	"net/http"
@@ -85,33 +88,41 @@ func (a *Agent) poll() {
 }
 func (a *Agent) report() {
 	for name, value := range a.gauges {
-		url := fmt.Sprintf("%s/update/gauge/%s/%f", a.serverAddr, name, value)
-		req, err := http.NewRequest(http.MethodPost, url, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("Content-Type", "text/plain")
-		//client.Do(req)
-		resp, err := a.httpClient.Do(req)
-		if err != nil || resp == nil {
-			continue
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		gaugeValue := value
+		a.sendMetric(models.Metrics{
+			ID:    name,
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		})
 	}
 
 	for name, value := range a.counters {
-		url := fmt.Sprintf("%s/update/counter/%s/%d", a.serverAddr, name, value)
-		req, err := http.NewRequest(http.MethodPost, url, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("Content-Type", "text/plain")
-		resp, err := a.httpClient.Do(req)
-		if err != nil || resp == nil {
-			continue
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		counterDelta := value
+		a.sendMetric(models.Metrics{
+			ID:    name,
+			MType: models.Counter,
+			Delta: &counterDelta,
+		})
 	}
+}
+
+func (a *Agent) sendMetric(metric models.Metrics) {
+	body, err := gojson.Marshal(metric)
+	if err != nil {
+		return
+	}
+
+	url := fmt.Sprintf("%s/update", a.serverAddr)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil || resp == nil {
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
 }

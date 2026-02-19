@@ -2,8 +2,10 @@ package handler
 
 import (
 	"fmt"
+	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
+	gojson "github.com/goccy/go-json"
 	"net/http"
 	"strconv"
 )
@@ -52,6 +54,49 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var metric models.Metrics
+	if err := gojson.NewDecoder(r.Body).Decode(&metric); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if metric.ID == "" {
+		http.Error(w, "metric name is required", http.StatusNotFound)
+		return
+	}
+
+	switch metric.MType {
+	case models.Gauge:
+		if metric.Value == nil {
+			http.Error(w, "gauge value is required", http.StatusBadRequest)
+			return
+		}
+		_ = h.storage.UpdateGauge(metric.ID, *metric.Value)
+		value, _ := h.storage.GetGauge(metric.ID)
+		metric.Value = &value
+		metric.Delta = nil
+	case models.Counter:
+		if metric.Delta == nil {
+			http.Error(w, "counter delta is required", http.StatusBadRequest)
+			return
+		}
+		_ = h.storage.UpdateCounter(metric.ID, *metric.Delta)
+		delta, _ := h.storage.GetCounter(metric.ID)
+		metric.Delta = &delta
+		metric.Value = nil
+	default:
+		http.Error(w, "unsupported metric type", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = gojson.NewEncoder(w).Encode(metric)
+}
+
 // Инкремент 3
 func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
@@ -79,6 +124,47 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 	}
+}
+
+func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var metric models.Metrics
+	if err := gojson.NewDecoder(r.Body).Decode(&metric); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if metric.ID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch metric.MType {
+	case models.Gauge:
+		value, ok := h.storage.GetGauge(metric.ID)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		metric.Value = &value
+		metric.Delta = nil
+	case models.Counter:
+		value, ok := h.storage.GetCounter(metric.ID)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		metric.Delta = &value
+		metric.Value = nil
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = gojson.NewEncoder(w).Encode(metric)
 }
 func (h *Handler) GetAllMetrics(w http.ResponseWriter, r *http.Request) {
 	gauges, counters := h.storage.GetAll()

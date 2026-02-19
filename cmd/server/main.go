@@ -42,7 +42,9 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetric)
+	r.Post("/update", handler.UpdateMetricJSON)
 	r.Get("/value/{type}/{name}", handler.GetMetricValue)
+	r.Post("/value", handler.GetMetricValueJSON)
 	r.Get("/", handler.GetAllMetrics)
 
 	log.Printf("Server started on http://%s\n", finalAddr)

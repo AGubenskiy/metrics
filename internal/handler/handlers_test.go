@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"bytes"
+	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/go-chi/chi/v5"
+	gojson "github.com/goccy/go-json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/AGubenskiy/metrics/internal/storage"
@@ -15,7 +19,9 @@ func setupRouter() http.Handler {
 
 	r := chi.NewRouter()
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
+	r.Post("/update", h.UpdateMetricJSON)
 	r.Get("/value/{type}/{name}", h.GetMetricValue)
+	r.Post("/value", h.GetMetricValueJSON)
 	r.Get("/", h.GetAllMetrics)
 
 	return r
@@ -168,5 +174,76 @@ func TestGetAllMetrics(t *testing.T) {
 
 	if ct := rr.Header().Get("Content-Type"); ct == "" {
 		t.Fatalf("expected Content-Type header to be set")
+	}
+}
+
+func TestUpdateMetricJSON(t *testing.T) {
+	router := setupRouter()
+
+	gaugeValue := 10.5
+	body, _ := gojson.Marshal(models.Metrics{
+		ID:    "testGauge",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected application/json content type, got %q", ct)
+	}
+
+	var got models.Metrics
+	if err := gojson.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	if got.ID != "testGauge" || got.MType != models.Gauge || got.Value == nil || *got.Value != gaugeValue {
+		t.Fatalf("unexpected response: %+v", got)
+	}
+}
+
+func TestGetMetricValueJSON(t *testing.T) {
+	router := setupRouter()
+
+	initialValue := 42.25
+	updateBody, _ := gojson.Marshal(models.Metrics{
+		ID:    "gaugeJSON",
+		MType: models.Gauge,
+		Value: &initialValue,
+	})
+	updateReq := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(updateBody))
+	updateReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(httptest.NewRecorder(), updateReq)
+
+	valueBody, _ := gojson.Marshal(models.Metrics{
+		ID:    "gaugeJSON",
+		MType: models.Gauge,
+	})
+	valueReq := httptest.NewRequest(http.MethodPost, "/value", bytes.NewReader(valueBody))
+	valueReq.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, valueReq)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected application/json content type, got %q", ct)
+	}
+
+	var got models.Metrics
+	if err := gojson.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	if got.Value == nil || *got.Value != initialValue {
+		t.Fatalf("expected value %f, got %+v", initialValue, got)
 	}
 }
