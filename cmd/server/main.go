@@ -47,8 +47,10 @@ func main() {
 	r.Use(loggerMiddleware.WithLogging(logger))
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
 	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/update/", h.UpdateMetricJSON)
 	r.Get("/value/{type}/{name}", h.GetMetricValue)
 	r.Post("/value", h.GetMetricValueJSON)
+	r.Post("/value/", h.GetMetricValueJSON)
 	r.Get("/", h.GetAllMetrics)
 
 	log.Printf("Server started on http://%s\n", finalAddr)
