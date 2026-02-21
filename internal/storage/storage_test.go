@@ -11,8 +11,12 @@ import (
 func TestCounterAccumulation(t *testing.T) {
 	s := NewMemStorage()
 
-	s.UpdateCounter("c", 10)
-	s.UpdateCounter("c", 5)
+	if err := s.UpdateCounter("c", 10); err != nil {
+		t.Fatalf("failed to update counter: %v", err)
+	}
+	if err := s.UpdateCounter("c", 5); err != nil {
+		t.Fatalf("failed to update counter: %v", err)
+	}
 
 	if s.counters["c"] != 15 {
 		t.Fatalf("expected 15, got %d", s.counters["c"])
