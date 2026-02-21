@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	gojson "github.com/goccy/go-json"
@@ -9,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -112,12 +114,23 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 		return
 	}
 
+	var compressedBody bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressedBody)
+	if _, err = gzipWriter.Write(body); err != nil {
+		return
+	}
+	if err = gzipWriter.Close(); err != nil {
+		return
+	}
+
 	url := fmt.Sprintf("%s/update", a.serverAddr)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody.Bytes()))
 	if err != nil {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil || resp == nil {
@@ -126,7 +139,30 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	if _, err = io.Copy(io.Discard, resp.Body); err != nil {
+	responseBody := io.Reader(resp.Body)
+	if hasGzipEncoding(resp.Header.Get("Content-Encoding")) {
+		gzipReader, gzipErr := gzip.NewReader(resp.Body)
+		if gzipErr != nil {
+			return
+		}
+		defer func() {
+			_ = gzipReader.Close()
+		}()
+		responseBody = gzipReader
+	}
+
+	if _, err = io.Copy(io.Discard, responseBody); err != nil {
 		return
 	}
+}
+
+func hasGzipEncoding(headerValue string) bool {
+	for _, part := range strings.Split(headerValue, ",") {
+		value := strings.TrimSpace(part)
+		value = strings.SplitN(value, ";", 2)[0]
+		if strings.EqualFold(value, "gzip") {
+			return true
+		}
+	}
+	return false
 }

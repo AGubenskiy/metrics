@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
+	"compress/gzip"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	gojson "github.com/goccy/go-json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -36,12 +39,27 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("expected Content-Type application/json, got %q", got)
 		}
+		if got := r.Header.Get("Content-Encoding"); got != "gzip" {
+			t.Fatalf("expected Content-Encoding gzip, got %q", got)
+		}
+		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Fatalf("expected Accept-Encoding gzip, got %q", got)
+		}
 
 		defer func() {
 			_ = r.Body.Close()
 		}()
+
+		gzipReader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer func() {
+			_ = gzipReader.Close()
+		}()
+
 		var m models.Metrics
-		if err := gojson.NewDecoder(r.Body).Decode(&m); err != nil {
+		if err := gojson.NewDecoder(gzipReader).Decode(&m); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
 
@@ -49,10 +67,20 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 		metrics = append(metrics, m)
 		mu.Unlock()
 
+		var responseBody bytes.Buffer
+		responseWriter := gzip.NewWriter(&responseBody)
+		if err := gojson.NewEncoder(responseWriter).Encode(m); err != nil {
+			t.Fatalf("failed to encode gzip response body: %v", err)
+		}
+		if err := responseWriter.Close(); err != nil {
+			t.Fatalf("failed to close gzip response writer: %v", err)
+		}
+
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
 		w.WriteHeader(http.StatusOK)
-		if err := gojson.NewEncoder(w).Encode(m); err != nil {
-			t.Fatalf("failed to encode response: %v", err)
+		if _, err := io.Copy(w, &responseBody); err != nil {
+			t.Fatalf("failed to write gzip response: %v", err)
 		}
 	}))
 	defer srv.Close()

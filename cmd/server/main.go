@@ -4,6 +4,7 @@ import (
 	"flag"
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
+	"github.com/AGubenskiy/metrics/internal/middleware"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -45,6 +46,7 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
+	r.Use(middleware.Gzip)
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
 	r.Post("/update", h.UpdateMetricJSON)
 	r.Post("/update/", h.UpdateMetricJSON)
