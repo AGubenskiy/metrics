@@ -1,18 +1,84 @@
 package handler
 
 import (
-	"fmt"
+	"bytes"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
+	"html/template"
 	"net/http"
+	"sort"
 	"strconv"
 )
 
 type Handler struct {
 	storage storage.Storage
 }
+
+type gaugeMetricRow struct {
+	Name  string
+	Value float64
+}
+
+type counterMetricRow struct {
+	Name  string
+	Value int64
+}
+
+type metricsPageData struct {
+	Gauges   []gaugeMetricRow
+	Counters []counterMetricRow
+}
+
+var metricsPageTmpl = template.Must(template.New("metrics-page").Parse(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Metrics</title>
+	<style>
+		body {
+			font-family: Arial, sans-serif;
+			padding: 10px;
+		}
+		h1 {
+			margin-bottom: 10px;
+		}
+		table {
+			border-collapse: collapse;
+			margin-bottom: 30px;
+			min-width: 400px;
+		}
+		th, td {
+			border: 1px solid #ccc;
+			padding: 8px 12px;
+			text-align: left;
+		}
+		th {
+			background-color: #CEE0CC;
+		}
+	</style>
+</head>
+<body>
+<h1>Metrics</h1>
+
+<h2>Gauge</h2>
+<table><tr><th>Name</th><th>Value</th></tr>
+{{range .Gauges}}
+	<tr><td>{{.Name}}</td><td>{{printf "%f" .Value}}</td></tr>
+{{end}}
+</table>
+
+<h2>Counter</h2>
+<table><tr><th>Name</th><th>Value</th></tr>
+{{range .Counters}}
+	<tr><td>{{.Name}}</td><td>{{.Value}}</td></tr>
+{{end}}
+</table>
+</body>
+</html>
+`))
 
 func NewHandler(s storage.Storage) *Handler {
 	return &Handler{storage: s}
@@ -195,63 +261,44 @@ func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetAllMetrics(w http.ResponseWriter, _ *http.Request) {
 	gauges, counters := h.storage.GetAll()
 
-	page := `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="UTF-8">
-	<title>Metrics</title>
-	<style>
-		body {
-			font-family: Arial, sans-serif;
-			padding: 10px;
-		}
-		h1 {
-			margin-bottom: 10px;
-		}
-		table {
-			border-collapse: collapse;
-			margin-bottom: 30px;
-			min-width: 400px;
-		}
-		th, td {
-			border: 1px solid #ccc;
-			padding: 8px 12px;
-			text-align: left;
-		}
-		th {
-			background-color: #CEE0CC;
-		}
-	</style>
-</head>
-<body>
-
-<h1>Metrics</h1>
-`
-
-	// Gauge
-	page += "<h2>Gauge</h2>"
-	page += "<table><tr><th>Name</th><th>Value</th></tr>"
-	for name, value := range gauges {
-		page += fmt.Sprintf("<tr><td>%s</td><td>%f</td></tr>", name, value)
+	gaugeNames := make([]string, 0, len(gauges))
+	for name := range gauges {
+		gaugeNames = append(gaugeNames, name)
 	}
-	page += "</table>"
+	sort.Strings(gaugeNames)
 
-	// Counter
-	page += "<h2>Counter</h2>"
-	page += "<table><tr><th>Name</th><th>Value</th></tr>"
-	for name, value := range counters {
-		page += fmt.Sprintf("<tr><td>%s</td><td>%d</td></tr>", name, value)
+	counterNames := make([]string, 0, len(counters))
+	for name := range counters {
+		counterNames = append(counterNames, name)
 	}
-	page += "</table>"
-	page += `
-</body>
-</html>
-`
+	sort.Strings(counterNames)
+
+	pageData := metricsPageData{
+		Gauges:   make([]gaugeMetricRow, 0, len(gaugeNames)),
+		Counters: make([]counterMetricRow, 0, len(counterNames)),
+	}
+	for _, name := range gaugeNames {
+		pageData.Gauges = append(pageData.Gauges, gaugeMetricRow{
+			Name:  name,
+			Value: gauges[name],
+		})
+	}
+	for _, name := range counterNames {
+		pageData.Counters = append(pageData.Counters, counterMetricRow{
+			Name:  name,
+			Value: counters[name],
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := metricsPageTmpl.Execute(&buf, pageData); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(page)); err != nil {
+	if _, err := w.Write(buf.Bytes()); err != nil {
 		return
 	}
 }

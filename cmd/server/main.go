@@ -1,19 +1,24 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
+
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
-	"log"
-	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
-	"time"
 )
 
 func main() {
@@ -81,22 +86,46 @@ func main() {
 			log.Fatalf("cannot restore metrics from %q: %v", finalFileStoragePath, err)
 		}
 	}
+
+	defer func() {
+		if err := store.SaveToFile(finalFileStoragePath); err != nil {
+			log.Printf("cannot final save to %q: %v", finalFileStoragePath, err)
+			return
+		}
+		log.Printf("metrics snapshot saved to %q", finalFileStoragePath)
+	}()
+
+	stopPeriodicSave := func() {}
 	if finalStoreInterval == 0 {
 		store.SetSyncSaveOnUpdate(func() error {
 			return store.SaveToFile(finalFileStoragePath)
 		})
 	} else {
+		saveCtx, saveCancel := context.WithCancel(context.Background())
+		saveDone := make(chan struct{})
+		stopPeriodicSave = func() {
+			saveCancel()
+			<-saveDone
+		}
+
 		go func() {
+			defer close(saveDone)
 			ticker := time.NewTicker(time.Duration(finalStoreInterval) * time.Second)
 			defer ticker.Stop()
 
-			for range ticker.C {
-				if err := store.SaveToFile(finalFileStoragePath); err != nil {
-					log.Printf("cannot save metrics to %q: %v", finalFileStoragePath, err)
+			for {
+				select {
+				case <-saveCtx.Done():
+					return
+				case <-ticker.C:
+					if err := store.SaveToFile(finalFileStoragePath); err != nil {
+						log.Printf("cannot save metrics to %q: %v", finalFileStoragePath, err)
+					}
 				}
 			}
 		}()
 	}
+	defer stopPeriodicSave()
 
 	h := handler.NewHandler(store)
 	logger, err := zap.NewProduction()
@@ -127,5 +156,37 @@ func main() {
 		finalFileStoragePath,
 		finalRestore,
 	)
-	log.Fatal(http.ListenAndServe(finalAddr, r))
+
+	server := &http.Server{
+		Addr:    finalAddr,
+		Handler: r,
+	}
+
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		err := server.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- err
+		}
+		close(serverErrCh)
+	}()
+
+	select {
+	case err := <-serverErrCh:
+		if err != nil {
+			log.Printf("server stopped with error: %v", err)
+		}
+	case <-signalCtx.Done():
+		log.Printf("shutdown signal-stopping HTTP server")
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("graceful shutdown failed: %v", err)
+		}
+	}
 }
