@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"strconv"
+
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -61,6 +63,18 @@ func main() {
 		finalReportInterval,
 		finalPollInterval,
 	)
+
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("cannot initialize logger: %v", err)
+	}
+	defer func() {
+		if syncErr := logger.Sync(); syncErr != nil {
+			log.Printf("logger sync error: %v", syncErr)
+		}
+	}()
+
 	a := agent.NewAgent("http://"+finalAddr, finalReportInterval, finalPollInterval)
+	a.SetLogger(logger)
 	a.Run()
 }

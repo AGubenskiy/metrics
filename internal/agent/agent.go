@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	models "github.com/AGubenskiy/metrics/internal/model"
-	gojson "github.com/goccy/go-json"
 	"io"
 	"math/rand"
 	"net/http"
 	"runtime"
 	"strings"
 	"time"
+
+	models "github.com/AGubenskiy/metrics/internal/model"
+	gojson "github.com/goccy/go-json"
+	"go.uber.org/zap"
 )
 
 type Agent struct {
@@ -22,6 +24,7 @@ type Agent struct {
 	gauges     map[string]float64
 	counters   map[string]int64
 	httpClient *http.Client // перенес в структуру
+	logger     *zap.Logger
 }
 
 func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
@@ -35,7 +38,15 @@ func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		logger: zap.NewNop(),
 	}
+}
+
+func (a *Agent) SetLogger(logger *zap.Logger) {
+	if logger == nil {
+		return
+	}
+	a.logger = logger
 }
 
 func (a *Agent) Run() {
@@ -109,23 +120,38 @@ func (a *Agent) report() {
 }
 
 func (a *Agent) sendMetric(metric models.Metrics) {
+	logFields := []zap.Field{
+		zap.String("metric_id", metric.ID),
+		zap.String("metric_type", metric.MType),
+	}
+
 	body, err := gojson.Marshal(metric)
 	if err != nil {
+		a.logger.Error("failed to marshal metric", append(logFields, zap.Error(err))...)
 		return
 	}
 
 	var compressedBody bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressedBody)
 	if _, err = gzipWriter.Write(body); err != nil {
+		if closeErr := gzipWriter.Close(); closeErr != nil {
+			a.logger.Error("failed to close gzip writer after write error", append(logFields, zap.Error(closeErr))...)
+		}
+		a.logger.Error("failed to gzip metric payload", append(logFields, zap.Error(err))...)
 		return
 	}
 	if err = gzipWriter.Close(); err != nil {
+		a.logger.Error("failed to close gzip writer", append(logFields, zap.Error(err))...)
 		return
 	}
 
 	url := fmt.Sprintf("%s/update", a.serverAddr)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody.Bytes()))
 	if err != nil {
+		a.logger.Error(
+			"failed to build metric request",
+			append(logFields, zap.Error(err), zap.String("url", url))...,
+		)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -133,16 +159,30 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := a.httpClient.Do(req)
-	if err != nil || resp == nil {
+	if err != nil {
+		a.logger.Error("failed to send metric", append(logFields, zap.Error(err), zap.String("url", url))...)
+		return
+	}
+	if resp == nil {
+		a.logger.Error("received nil response while sending metric", append(logFields, zap.String("url", url))...)
 		return
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
+
+	if resp.StatusCode != http.StatusOK {
+		a.logger.Warn(
+			"server returned not OK status",
+			append(logFields, zap.Int("status_code", resp.StatusCode), zap.String("status", resp.Status))...,
+		)
+	}
+
 	responseBody := io.Reader(resp.Body)
 	if hasGzipEncoding(resp.Header.Get("Content-Encoding")) {
 		gzipReader, gzipErr := gzip.NewReader(resp.Body)
 		if gzipErr != nil {
+			a.logger.Error("failed to create gzip reader for response", append(logFields, zap.Error(gzipErr))...)
 			return
 		}
 		defer func() {
@@ -152,6 +192,7 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 	}
 
 	if _, err = io.Copy(io.Discard, responseBody); err != nil {
+		a.logger.Error("failed to read response body", append(logFields, zap.Error(err))...)
 		return
 	}
 }
