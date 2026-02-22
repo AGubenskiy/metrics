@@ -10,17 +10,8 @@ import (
 	gojson "github.com/goccy/go-json"
 )
 
-type Storage interface {
-	UpdateGauge(name string, value float64) error
-	UpdateCounter(name string, value int64) error
-	//Инкремент 3
-	GetGauge(name string) (float64, bool)
-	GetCounter(name string) (int64, bool)
-	GetAll() (map[string]float64, map[string]int64)
-}
-
 type MemStorage struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	gauges   map[string]float64
 	counters map[string]int64
 	onUpdate func() error
@@ -59,20 +50,20 @@ func (m *MemStorage) UpdateCounter(name string, value int64) error {
 
 // Инкремент 3
 func (m *MemStorage) GetGauge(name string) (float64, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	value, ok := m.gauges[name]
 	return value, ok
 }
 func (m *MemStorage) GetCounter(name string) (int64, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	value, ok := m.counters[name]
 	return value, ok
 }
 func (m *MemStorage) GetAll() (map[string]float64, map[string]int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	//return m.gauges, m.counters
 	gaugesOut := make(map[string]float64, len(m.gauges))
 	for k, v := range m.gauges {
@@ -182,8 +173,8 @@ func (m *MemStorage) LoadFromFile(path string) error {
 }
 
 func (m *MemStorage) snapshot() []models.Metrics {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	gaugeNames := make([]string, 0, len(m.gauges))
 	for name := range m.gauges {

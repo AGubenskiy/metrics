@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"math/rand"
@@ -49,11 +50,15 @@ func (a *Agent) SetLogger(logger *zap.Logger) {
 	a.logger = logger
 }
 
-func (a *Agent) Run() {
+func (a *Agent) Run(ctx context.Context) {
 	pollTicker := time.NewTicker(a.pollInterval)
 	reportTicker := time.NewTicker(a.reportInterval)
+	defer pollTicker.Stop()
+	defer reportTicker.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		//ожидание что в любой канал тикера придет значение
 		case <-pollTicker.C:
 			a.poll()

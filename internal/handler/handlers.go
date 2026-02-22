@@ -3,7 +3,6 @@ package handler
 import (
 	"bytes"
 	models "github.com/AGubenskiy/metrics/internal/model"
-	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
 	"html/template"
@@ -13,7 +12,7 @@ import (
 )
 
 type Handler struct {
-	storage storage.Storage
+	storage Storage
 }
 
 type gaugeMetricRow struct {
@@ -80,7 +79,7 @@ var metricsPageTmpl = template.Must(template.New("metrics-page").Parse(`
 </html>
 `))
 
-func NewHandler(s storage.Storage) *Handler {
+func NewHandler(s Storage) *Handler {
 	return &Handler{storage: s}
 }
 

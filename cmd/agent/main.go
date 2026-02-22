@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"github.com/AGubenskiy/metrics/internal/agent"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
 
 	"go.uber.org/zap"
@@ -76,5 +78,9 @@ func main() {
 
 	a := agent.NewAgent("http://"+finalAddr, finalReportInterval, finalPollInterval)
 	a.SetLogger(logger)
-	a.Run()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	a.Run(ctx)
 }
