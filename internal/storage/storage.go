@@ -1,12 +1,13 @@
 package storage
 
 import (
-	models "github.com/AGubenskiy/metrics/internal/model"
-	gojson "github.com/goccy/go-json"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+
+	models "github.com/AGubenskiy/metrics/internal/model"
+	gojson "github.com/goccy/go-json"
 )
 
 type Storage interface {
@@ -108,14 +109,32 @@ func (m *MemStorage) SaveToFile(path string) error {
 	if err = os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return err
 	}
-
-	if err = os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(path)
-		if retryErr := os.Rename(tmpPath, path); retryErr != nil {
-			return retryErr
+	//Наверное можно как то лучше сделать
+	// если файл существует — делаем бэкап
+	bakPath := path + ".bak"
+	if _, statErr := os.Stat(path); statErr == nil {
+		//если остался старый.bak удаляю
+		_ = os.Remove(bakPath)
+		if err = os.Rename(path, bakPath); err != nil {
+			//удаляем временный файл и возвращаем ошибку
+			_ = os.Remove(tmpPath)
+			return err
 		}
 	}
 
+	// переносим новый файл на место
+	if err = os.Rename(tmpPath, path); err != nil {
+		// пробуем откатиться, если был бэкап
+		//проверяю есть ли bak и возвращаю на место
+		if _, statErr := os.Stat(bakPath); statErr == nil {
+			_ = os.Rename(bakPath, path)
+		}
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	// если все прошло хорошо можно удалить бэкап
+	_ = os.Remove(bakPath)
 	return nil
 }
 
