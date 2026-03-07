@@ -5,6 +5,7 @@ go 1.23.7
 require (
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/goccy/go-json v0.10.5
+	github.com/lib/pq v1.10.9
 	go.uber.org/zap v1.27.1
 )
 

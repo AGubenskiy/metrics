@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
@@ -9,10 +10,12 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 )
 
 type Handler struct {
 	storage Storage
+	pinger  Pinger
 }
 
 type gaugeMetricRow struct {
@@ -81,6 +84,13 @@ var metricsPageTmpl = template.Must(template.New("metrics-page").Parse(`
 
 func NewHandler(s Storage) *Handler {
 	return &Handler{storage: s}
+}
+
+func NewHandlerWithPinger(s Storage, pinger Pinger) *Handler {
+	return &Handler{
+		storage: s,
+		pinger:  pinger,
+	}
 }
 
 func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +267,24 @@ func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 }
+
+func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
+	if h.pinger == nil {
+		http.Error(w, "database connection is not configured", http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+
+	if err := h.pinger.PingContext(ctx); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func (h *Handler) GetAllMetrics(w http.ResponseWriter, _ *http.Request) {
 	gauges, counters := h.storage.GetAll()
 

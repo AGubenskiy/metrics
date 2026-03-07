@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
+	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +28,7 @@ func main() {
 		defaultAddr          = "localhost:8080"
 		defaultStoreInterval = 300
 		defaultRestore       = true
+		defaultDatabaseDSN   = ""
 	)
 	defaultFileStoragePath := filepath.Join(os.TempDir(), "metrics-db.json")
 
@@ -34,6 +37,7 @@ func main() {
 	storeInterval := flag.Int("i", defaultStoreInterval, "store interval in seconds")
 	fileStoragePath := flag.String("f", defaultFileStoragePath, "file storage path")
 	restore := flag.Bool("r", defaultRestore, "restore metrics from file at startup")
+	databaseDSN := flag.String("d", defaultDatabaseDSN, "database connection DSN")
 	flag.Parse()
 
 	setFlags := map[string]bool{}
@@ -78,6 +82,13 @@ func main() {
 		finalRestore = parsedRestore
 	} else if setFlags["r"] {
 		finalRestore = *restore
+	}
+
+	finalDatabaseDSN := defaultDatabaseDSN
+	if envDatabaseDSN := os.Getenv("DATABASE_DSN"); envDatabaseDSN != "" {
+		finalDatabaseDSN = envDatabaseDSN
+	} else if setFlags["d"] {
+		finalDatabaseDSN = *databaseDSN
 	}
 
 	store := storage.NewMemStorage()
@@ -127,7 +138,22 @@ func main() {
 	}
 	defer stopPeriodicSave()
 
-	h := handler.NewHandler(store)
+	var db *sql.DB
+	if finalDatabaseDSN != "" {
+		dbConn, err := sql.Open("postgres", finalDatabaseDSN)
+		if err != nil {
+			log.Fatalf("cannot initialize database connection: %v", err)
+		}
+		db = dbConn
+
+		defer func() {
+			if closeErr := db.Close(); closeErr != nil {
+				log.Printf("cannot close database connection: %v", closeErr)
+			}
+		}()
+	}
+
+	h := handler.NewHandlerWithPinger(store, db)
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatalf("cannot initialize logger: %v", err)
@@ -148,13 +174,15 @@ func main() {
 	r.Post("/value", h.GetMetricValueJSON)
 	r.Post("/value/", h.GetMetricValueJSON)
 	r.Get("/", h.GetAllMetrics)
+	r.Get("/ping", h.Ping)
 
 	log.Printf(
-		"Server started on http://%s (store_interval=%ds, file=%s, restore=%t)\n",
+		"Server started on http://%s (store_interval=%ds, file=%s, restore=%t, db=%t)\n",
 		finalAddr,
 		finalStoreInterval,
 		finalFileStoragePath,
 		finalRestore,
+		finalDatabaseDSN != "",
 	)
 
 	server := &http.Server{

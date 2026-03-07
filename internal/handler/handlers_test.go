@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/go-chi/chi/v5"
@@ -16,6 +18,14 @@ import (
 	"github.com/AGubenskiy/metrics/internal/storage"
 )
 
+type mockPinger struct {
+	err error
+}
+
+func (m *mockPinger) PingContext(_ context.Context) error {
+	return m.err
+}
+
 func setupRouter() http.Handler {
 	store := storage.NewMemStorage()
 	h := NewHandler(store)
@@ -27,6 +37,17 @@ func setupRouter() http.Handler {
 	r.Get("/value/{type}/{name}", h.GetMetricValue)
 	r.Post("/value", h.GetMetricValueJSON)
 	r.Get("/", h.GetAllMetrics)
+	r.Get("/ping", h.Ping)
+
+	return r
+}
+
+func setupRouterWithPinger(pinger Pinger) http.Handler {
+	store := storage.NewMemStorage()
+	h := NewHandlerWithPinger(store, pinger)
+
+	r := chi.NewRouter()
+	r.Get("/ping", h.Ping)
 
 	return r
 }
@@ -356,6 +377,44 @@ func TestNoGzipForUnsupportedContentType(t *testing.T) {
 	}
 	if got := rr.Header().Get("Content-Encoding"); got != "" {
 		t.Fatalf("expected empty Content-Encoding for text/plain response, got %q", got)
+	}
+}
+
+func TestPing(t *testing.T) {
+	tests := []struct {
+		name       string
+		pinger     Pinger
+		wantStatus int
+	}{
+		{
+			name:       "db not configured",
+			pinger:     nil,
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:       "ping ok",
+			pinger:     &mockPinger{},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "ping fails",
+			pinger:     &mockPinger{err: errors.New("db unavailable")},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := setupRouterWithPinger(tt.pinger)
+			req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+			rr := httptest.NewRecorder()
+
+			router.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rr.Code)
+			}
+		})
 	}
 }
 
