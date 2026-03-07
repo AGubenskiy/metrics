@@ -3,13 +3,16 @@ package agent
 import (
 	"bytes"
 	"compress/gzip"
+	"errors"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	gojson "github.com/goccy/go-json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestPollIncrementsCounter(t *testing.T) {
@@ -183,4 +186,86 @@ func TestReportFallsBackToSingleMetricEndpoint(t *testing.T) {
 	if len(singleMetrics) != 2 {
 		t.Fatalf("expected 2 fallback metric requests, got %d", len(singleMetrics))
 	}
+}
+
+func TestSendCompressedJSONWithRetry_RetriesTemporaryNetworkErrors(t *testing.T) {
+	attempts := 0
+
+	a := NewAgent("http://example.com", 10, 5)
+	a.retryDelays = []time.Duration{0, 0, 0}
+	a.sleep = func(time.Duration) {}
+	a.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts <= 2 {
+				return nil, &url.Error{
+					Op:  req.Method,
+					URL: req.URL.String(),
+					Err: temporaryNetError{},
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	statusCode, err := a.sendCompressedJSONWithRetry("/update", []byte(`{"id":"Alloc","type":"gauge","value":1}`))
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, statusCode)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+func TestSendCompressedJSONWithRetry_DoesNotRetryNonRetriableErrors(t *testing.T) {
+	attempts := 0
+
+	a := NewAgent("http://example.com", 10, 5)
+	a.retryDelays = []time.Duration{0, 0, 0}
+	a.sleep = func(time.Duration) {}
+	a.httpClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			return nil, errors.New("non-retriable error")
+		}),
+	}
+
+	statusCode, err := a.sendCompressedJSONWithRetry("/update", []byte(`{"id":"Alloc","type":"gauge","value":1}`))
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	if statusCode != 0 {
+		t.Fatalf("expected status 0 on error, got %d", statusCode)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type temporaryNetError struct{}
+
+func (temporaryNetError) Error() string {
+	return "temporary network error"
+}
+
+func (temporaryNetError) Timeout() bool {
+	return true
+}
+
+func (temporaryNetError) Temporary() bool {
+	return true
 }

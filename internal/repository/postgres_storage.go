@@ -7,6 +7,8 @@ import (
 	"time"
 
 	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/jackc/pgerrcode"
+	"github.com/lib/pq"
 )
 
 const queryTimeout = 3 * time.Second
@@ -23,25 +25,35 @@ const (
 )
 
 type PostgresStorage struct {
-	db *sql.DB
+	db          *sql.DB
+	retryDelays []time.Duration
+	sleep       func(time.Duration)
 }
 
 func NewPostgresStorage(db *sql.DB) *PostgresStorage {
-	return &PostgresStorage{db: db}
+	return &PostgresStorage{
+		db:          db,
+		retryDelays: []time.Duration{1 * time.Second, 3 * time.Second, 5 * time.Second},
+		sleep:       time.Sleep,
+	}
 }
 
 func (s *PostgresStorage) UpdateGauge(name string, value float64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
+	return s.retry(func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
 
-	return updateGauge(ctx, s.db, name, value)
+		return updateGauge(ctx, s.db, name, value)
+	})
 }
 
 func (s *PostgresStorage) UpdateCounter(name string, value int64) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
+	return s.retry(func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
 
-	return updateCounter(ctx, s.db, name, value)
+		return updateCounter(ctx, s.db, name, value)
+	})
 }
 
 func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) (err error) {
@@ -55,32 +67,35 @@ func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) (err error) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
+	err = s.retry(func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		defer cancel()
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return txErr
 		}
-	}()
+		defer func() {
+			if txErr != nil {
+				_ = tx.Rollback()
+			}
+		}()
 
-	for _, metric := range metrics {
-		switch metric.MType {
-		case models.Gauge:
-			err = updateGauge(ctx, tx, metric.ID, *metric.Value)
-		case models.Counter:
-			err = updateCounter(ctx, tx, metric.ID, *metric.Delta)
+		for _, metric := range metrics {
+			switch metric.MType {
+			case models.Gauge:
+				txErr = updateGauge(ctx, tx, metric.ID, *metric.Value)
+			case models.Counter:
+				txErr = updateCounter(ctx, tx, metric.ID, *metric.Delta)
+			}
+			if txErr != nil {
+				return txErr
+			}
 		}
-		if err != nil {
-			return err
-		}
-	}
 
-	err = tx.Commit()
+		txErr = tx.Commit()
+		return txErr
+	})
 	return err
 }
 
@@ -214,4 +229,35 @@ func validateMetric(metric models.Metrics) error {
 	}
 
 	return nil
+}
+
+func (s *PostgresStorage) retry(operation func() error) error {
+	err := operation()
+	if err == nil || !isRetriablePostgresError(err) {
+		return err
+	}
+
+	lastErr := err
+	for _, delay := range s.retryDelays {
+		s.sleep(delay)
+		err = operation()
+		if err == nil {
+			return nil
+		}
+		if !isRetriablePostgresError(err) {
+			return err
+		}
+		lastErr = err
+	}
+
+	return lastErr
+}
+
+func isRetriablePostgresError(err error) bool {
+	var pgErr *pq.Error
+	if errors.As(err, &pgErr) {
+		return pgerrcode.IsConnectionException(string(pgErr.Code))
+	}
+
+	return false
 }

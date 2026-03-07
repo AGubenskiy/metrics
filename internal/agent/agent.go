@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"time"
@@ -23,10 +25,12 @@ type Agent struct {
 	pollInterval   time.Duration
 	reportInterval time.Duration
 
-	gauges     map[string]float64
-	counters   map[string]int64
-	httpClient *http.Client // перенес в структуру
-	logger     *zap.Logger
+	gauges      map[string]float64
+	counters    map[string]int64
+	httpClient  *http.Client // перенес в структуру
+	logger      *zap.Logger
+	retryDelays []time.Duration
+	sleep       func(time.Duration)
 }
 
 func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
@@ -40,7 +44,9 @@ func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
-		logger: zap.NewNop(),
+		logger:      zap.NewNop(),
+		retryDelays: []time.Duration{1 * time.Second, 3 * time.Second, 5 * time.Second},
+		sleep:       time.Sleep,
 	}
 }
 
@@ -154,7 +160,7 @@ func (a *Agent) sendMetricsBatch(metrics []models.Metrics) bool {
 		return false
 	}
 
-	statusCode, err := a.sendCompressedJSON("/updates/", body)
+	statusCode, err := a.sendCompressedJSONWithRetry("/updates/", body)
 	if err != nil {
 		a.logger.Error("failed to send metrics batch", append(logFields, zap.Error(err))...)
 		return false
@@ -190,7 +196,7 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 		return
 	}
 
-	statusCode, err := a.sendCompressedJSON("/update", body)
+	statusCode, err := a.sendCompressedJSONWithRetry("/update", body)
 	if err != nil {
 		a.logger.Error("failed to send metric", append(logFields, zap.Error(err))...)
 		return
@@ -207,8 +213,8 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 		return 0, err
 	}
 
-	url := a.buildURL(path)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody))
+	endpointURL := a.buildURL(path)
+	req, err := http.NewRequest(http.MethodPost, endpointURL, bytes.NewReader(compressedBody))
 	if err != nil {
 		return 0, err
 	}
@@ -221,7 +227,7 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 		return 0, err
 	}
 	if resp == nil {
-		return 0, fmt.Errorf("received nil response for url %s", url)
+		return 0, fmt.Errorf("received nil response for url %s", endpointURL)
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -244,6 +250,28 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 	}
 
 	return resp.StatusCode, nil
+}
+
+func (a *Agent) sendCompressedJSONWithRetry(path string, body []byte) (int, error) {
+	statusCode, err := a.sendCompressedJSON(path, body)
+	if err == nil || !isRetriableAgentError(err) {
+		return statusCode, err
+	}
+
+	lastErr := err
+	for _, delay := range a.retryDelays {
+		a.sleep(delay)
+		statusCode, err = a.sendCompressedJSON(path, body)
+		if err == nil {
+			return statusCode, nil
+		}
+		if !isRetriableAgentError(err) {
+			return 0, err
+		}
+		lastErr = err
+	}
+
+	return 0, lastErr
 }
 
 func (a *Agent) buildURL(path string) string {
@@ -276,5 +304,34 @@ func hasGzipEncoding(headerValue string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+func isRetriableAgentError(err error) bool {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return isRetriableAgentError(urlErr.Err)
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return true
+		}
+
+		type temporary interface {
+			Temporary() bool
+		}
+
+		if tempErr, ok := any(netErr).(temporary); ok && tempErr.Temporary() {
+			return true
+		}
+	}
+
 	return false
 }
