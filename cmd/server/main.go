@@ -11,12 +11,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
+	"github.com/AGubenskiy/metrics/internal/repository"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
@@ -45,115 +47,83 @@ func main() {
 		setFlags[f.Name] = true
 	})
 
-	finalAddr := defaultAddr
-	if envAddr := os.Getenv("ADDRESS"); envAddr != "" {
-		finalAddr = envAddr
-	} else if setFlags["a"] {
-		finalAddr = *addr
-	}
+	finalAddr := resolveStringSetting("ADDRESS", setFlags["a"], *addr, defaultAddr)
 
-	finalStoreInterval := defaultStoreInterval
-	if envStoreInterval := os.Getenv("STORE_INTERVAL"); envStoreInterval != "" {
-		parsedStoreInterval, err := strconv.Atoi(envStoreInterval)
-		if err != nil {
-			log.Fatalf("invalid STORE_INTERVAL value %q: %v", envStoreInterval, err)
-		}
-		finalStoreInterval = parsedStoreInterval
-	} else if setFlags["i"] {
-		finalStoreInterval = *storeInterval
+	finalStoreInterval, err := resolveIntSetting("STORE_INTERVAL", setFlags["i"], *storeInterval, defaultStoreInterval)
+	if err != nil {
+		log.Fatal(err)
 	}
 	if finalStoreInterval < 0 {
 		log.Fatalf("store interval cannot be negative: %d", finalStoreInterval)
 	}
 
-	finalFileStoragePath := defaultFileStoragePath
-	if envFileStoragePath := os.Getenv("FILE_STORAGE_PATH"); envFileStoragePath != "" {
-		finalFileStoragePath = envFileStoragePath
-	} else if setFlags["f"] {
-		finalFileStoragePath = *fileStoragePath
+	finalFileStoragePath := resolveStringSetting("FILE_STORAGE_PATH", setFlags["f"], *fileStoragePath, defaultFileStoragePath)
+
+	finalRestore, err := resolveBoolSetting("RESTORE", setFlags["r"], *restore, defaultRestore)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	finalRestore := defaultRestore
-	if envRestore := os.Getenv("RESTORE"); envRestore != "" {
-		parsedRestore, err := strconv.ParseBool(envRestore)
-		if err != nil {
-			log.Fatalf("invalid RESTORE value %q: %v", envRestore, err)
-		}
-		finalRestore = parsedRestore
-	} else if setFlags["r"] {
-		finalRestore = *restore
-	}
+	finalDatabaseDSN := resolveStringSetting("DATABASE_DSN", setFlags["d"], *databaseDSN, defaultDatabaseDSN)
+	fileStorageConfigured := isNonEmptyEnv("FILE_STORAGE_PATH") ||
+		isNonEmptyEnv("STORE_INTERVAL") ||
+		isNonEmptyEnv("RESTORE") ||
+		setFlags["f"] ||
+		setFlags["i"] ||
+		setFlags["r"]
 
-	finalDatabaseDSN := defaultDatabaseDSN
-	if envDatabaseDSN := os.Getenv("DATABASE_DSN"); envDatabaseDSN != "" {
-		finalDatabaseDSN = envDatabaseDSN
-	} else if setFlags["d"] {
-		finalDatabaseDSN = *databaseDSN
-	}
+	var (
+		store        handler.Storage
+		pinger       handler.Pinger
+		storageMode  string
+		stopAndFlush = func() {}
+	)
 
-	store := storage.NewMemStorage()
-	if finalRestore {
-		if err := store.LoadFromFile(finalFileStoragePath); err != nil {
-			log.Fatalf("cannot restore metrics from %q: %v", finalFileStoragePath, err)
-		}
-	}
-
-	defer func() {
-		if err := store.SaveToFile(finalFileStoragePath); err != nil {
-			log.Printf("cannot final save to %q: %v", finalFileStoragePath, err)
-			return
-		}
-		log.Printf("metrics snapshot saved to %q", finalFileStoragePath)
-	}()
-
-	stopPeriodicSave := func() {}
-	if finalStoreInterval == 0 {
-		store.SetSyncSaveOnUpdate(func() error {
-			return store.SaveToFile(finalFileStoragePath)
-		})
-	} else {
-		saveCtx, saveCancel := context.WithCancel(context.Background())
-		saveDone := make(chan struct{})
-		stopPeriodicSave = func() {
-			saveCancel()
-			<-saveDone
+	switch {
+	case finalDatabaseDSN != "":
+		if err = repository.ApplyMigrations(finalDatabaseDSN); err != nil {
+			log.Fatalf("cannot apply database migrations: %v", err)
 		}
 
-		go func() {
-			defer close(saveDone)
-			ticker := time.NewTicker(time.Duration(finalStoreInterval) * time.Second)
-			defer ticker.Stop()
-
-			for {
-				select {
-				case <-saveCtx.Done():
-					return
-				case <-ticker.C:
-					if err := store.SaveToFile(finalFileStoragePath); err != nil {
-						log.Printf("cannot save metrics to %q: %v", finalFileStoragePath, err)
-					}
-				}
-			}
-		}()
-	}
-	defer stopPeriodicSave()
-
-	var db *sql.DB
-	if finalDatabaseDSN != "" {
-		dbConn, err := sql.Open("postgres", finalDatabaseDSN)
-		if err != nil {
-			log.Fatalf("cannot initialize database connection: %v", err)
+		db, dbErr := sql.Open("postgres", finalDatabaseDSN)
+		if dbErr != nil {
+			log.Fatalf("cannot initialize database connection: %v", dbErr)
 		}
-		db = dbConn
 
-		defer func() {
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		dbErr = db.PingContext(pingCtx)
+		pingCancel()
+		if dbErr != nil {
+			_ = db.Close()
+			log.Fatalf("cannot connect to database: %v", dbErr)
+		}
+
+		store = repository.NewPostgresStorage(db)
+		pinger = db
+		storageMode = "postgres"
+		stopAndFlush = func() {
 			if closeErr := db.Close(); closeErr != nil {
 				log.Printf("cannot close database connection: %v", closeErr)
 			}
-		}()
-	}
+		}
+	case fileStorageConfigured:
+		fileStore := storage.NewMemStorage()
+		if finalRestore {
+			if err = fileStore.LoadFromFile(finalFileStoragePath); err != nil {
+				log.Fatalf("cannot restore metrics from %q: %v", finalFileStoragePath, err)
+			}
+		}
 
-	h := handler.NewHandlerWithPinger(store, db)
+		stopAndFlush = setupFilePersistence(fileStore, finalStoreInterval, finalFileStoragePath)
+		store = fileStore
+		storageMode = "file"
+	default:
+		store = storage.NewMemStorage()
+		storageMode = "memory"
+	}
+	defer stopAndFlush()
+
+	h := handler.NewHandlerWithPinger(store, pinger)
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatalf("cannot initialize logger: %v", err)
@@ -177,8 +147,9 @@ func main() {
 	r.Get("/ping", h.Ping)
 
 	log.Printf(
-		"Server started on http://%s (store_interval=%ds, file=%s, restore=%t, db=%t)\n",
+		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t)\n",
 		finalAddr,
+		storageMode,
 		finalStoreInterval,
 		finalFileStoragePath,
 		finalRestore,
@@ -217,4 +188,105 @@ func main() {
 			log.Printf("graceful shutdown failed: %v", err)
 		}
 	}
+}
+
+func setupFilePersistence(store *storage.MemStorage, storeInterval int, fileStoragePath string) func() {
+	stopPeriodicSave := func() {}
+	if storeInterval == 0 {
+		store.SetSyncSaveOnUpdate(func() error {
+			return store.SaveToFile(fileStoragePath)
+		})
+	} else {
+		saveCtx, saveCancel := context.WithCancel(context.Background())
+		saveDone := make(chan struct{})
+		stopPeriodicSave = func() {
+			saveCancel()
+			<-saveDone
+		}
+
+		go func() {
+			defer close(saveDone)
+			ticker := time.NewTicker(time.Duration(storeInterval) * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-saveCtx.Done():
+					return
+				case <-ticker.C:
+					if err := store.SaveToFile(fileStoragePath); err != nil {
+						log.Printf("cannot save metrics to %q: %v", fileStoragePath, err)
+					}
+				}
+			}
+		}()
+	}
+
+	return func() {
+		stopPeriodicSave()
+		if err := store.SaveToFile(fileStoragePath); err != nil {
+			log.Printf("cannot final save to %q: %v", fileStoragePath, err)
+			return
+		}
+		log.Printf("metrics snapshot saved to %q", fileStoragePath)
+	}
+}
+
+func resolveStringSetting(envName string, flagSet bool, flagValue, defaultValue string) string {
+	if value, ok := getNonEmptyEnv(envName); ok {
+		return value
+	}
+	if flagSet {
+		trimmed := strings.TrimSpace(flagValue)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return defaultValue
+}
+
+func resolveIntSetting(envName string, flagSet bool, flagValue, defaultValue int) (int, error) {
+	if value, ok := getNonEmptyEnv(envName); ok {
+		parsedValue, err := strconv.Atoi(value)
+		if err != nil {
+			return 0, errors.New("invalid " + envName + " value " + strconv.Quote(value) + ": " + err.Error())
+		}
+		return parsedValue, nil
+	}
+	if flagSet {
+		return flagValue, nil
+	}
+	return defaultValue, nil
+}
+
+func resolveBoolSetting(envName string, flagSet bool, flagValue, defaultValue bool) (bool, error) {
+	if value, ok := getNonEmptyEnv(envName); ok {
+		parsedValue, err := strconv.ParseBool(value)
+		if err != nil {
+			return false, errors.New("invalid " + envName + " value " + strconv.Quote(value) + ": " + err.Error())
+		}
+		return parsedValue, nil
+	}
+	if flagSet {
+		return flagValue, nil
+	}
+	return defaultValue, nil
+}
+
+func isNonEmptyEnv(envName string) bool {
+	_, ok := getNonEmptyEnv(envName)
+	return ok
+}
+
+func getNonEmptyEnv(envName string) (string, bool) {
+	value, ok := os.LookupEnv(envName)
+	if !ok {
+		return "", false
+	}
+
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
 }
