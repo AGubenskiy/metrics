@@ -34,8 +34,12 @@ func setupRouter() http.Handler {
 	r.Use(middleware.Gzip)
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
 	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/update/", h.UpdateMetricJSON)
+	r.Post("/updates", h.UpdateMetricsJSON)
+	r.Post("/updates/", h.UpdateMetricsJSON)
 	r.Get("/value/{type}/{name}", h.GetMetricValue)
 	r.Post("/value", h.GetMetricValueJSON)
+	r.Post("/value/", h.GetMetricValueJSON)
 	r.Get("/", h.GetAllMetrics)
 	r.Get("/ping", h.Ping)
 
@@ -338,6 +342,86 @@ func TestGzipResponseForJSON(t *testing.T) {
 	}
 	if got.Value == nil || *got.Value != gaugeValue {
 		t.Fatalf("expected value %f, got %+v", gaugeValue, got)
+	}
+}
+
+func TestUpdateMetricsJSON(t *testing.T) {
+	router := setupRouter()
+
+	gaugeValue := 5.5
+	counterDelta := int64(7)
+	requestMetrics := []models.Metrics{
+		{
+			ID:    "batchGauge",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+		{
+			ID:    "batchCounter",
+			MType: models.Counter,
+			Delta: &counterDelta,
+		},
+	}
+
+	body, err := gojson.Marshal(requestMetrics)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	valueGaugeReq, _ := gojson.Marshal(models.Metrics{ID: "batchGauge", MType: models.Gauge})
+	gaugeReq := httptest.NewRequest(http.MethodPost, "/value/", bytes.NewReader(valueGaugeReq))
+	gaugeReq.Header.Set("Content-Type", "application/json")
+	gaugeRR := httptest.NewRecorder()
+	router.ServeHTTP(gaugeRR, gaugeReq)
+	if gaugeRR.Code != http.StatusOK {
+		t.Fatalf("expected status %d for gauge value, got %d", http.StatusOK, gaugeRR.Code)
+	}
+
+	valueCounterReq, _ := gojson.Marshal(models.Metrics{ID: "batchCounter", MType: models.Counter})
+	counterReq := httptest.NewRequest(http.MethodPost, "/value/", bytes.NewReader(valueCounterReq))
+	counterReq.Header.Set("Content-Type", "application/json")
+	counterRR := httptest.NewRecorder()
+	router.ServeHTTP(counterRR, counterReq)
+	if counterRR.Code != http.StatusOK {
+		t.Fatalf("expected status %d for counter value, got %d", http.StatusOK, counterRR.Code)
+	}
+}
+
+func TestUpdateMetricsJSONWithGzipBody(t *testing.T) {
+	router := setupRouter()
+
+	gaugeValue := 8.8
+	requestMetrics := []models.Metrics{
+		{
+			ID:    "gzipBatchGauge",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+	}
+
+	body, err := gojson.Marshal(requestMetrics)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	compressedBody := gzipBytes(t, body)
+	req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(compressedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
 	}
 }
 

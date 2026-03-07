@@ -140,6 +140,8 @@ func main() {
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
 	r.Post("/update", h.UpdateMetricJSON)
 	r.Post("/update/", h.UpdateMetricJSON)
+	r.Post("/updates", h.UpdateMetricsJSON)
+	r.Post("/updates/", h.UpdateMetricsJSON)
 	r.Get("/value/{type}/{name}", h.GetMetricValue)
 	r.Post("/value", h.GetMetricValueJSON)
 	r.Post("/value/", h.GetMetricValueJSON)

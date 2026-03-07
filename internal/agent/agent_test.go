@@ -33,8 +33,8 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected method POST, got %s", r.Method)
 		}
-		if r.URL.Path != "/update" {
-			t.Fatalf("expected path /update, got %s", r.URL.Path)
+		if r.URL.Path != "/updates/" {
+			t.Fatalf("expected path /updates/, got %s", r.URL.Path)
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("expected Content-Type application/json, got %q", got)
@@ -58,18 +58,18 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 			_ = gzipReader.Close()
 		}()
 
-		var m models.Metrics
-		if err := gojson.NewDecoder(gzipReader).Decode(&m); err != nil {
+		var batch []models.Metrics
+		if err := gojson.NewDecoder(gzipReader).Decode(&batch); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
 
 		mu.Lock()
-		metrics = append(metrics, m)
+		metrics = append(metrics, batch...)
 		mu.Unlock()
 
 		var responseBody bytes.Buffer
 		responseWriter := gzip.NewWriter(&responseBody)
-		if err := gojson.NewEncoder(responseWriter).Encode(m); err != nil {
+		if err := gojson.NewEncoder(responseWriter).Encode(map[string]string{"status": "ok"}); err != nil {
 			t.Fatalf("failed to encode gzip response body: %v", err)
 		}
 		if err := responseWriter.Close(); err != nil {
@@ -112,5 +112,75 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 
 	if !foundGauge || !foundCounter {
 		t.Fatalf("sent metrics mismatch: %+v", metrics)
+	}
+}
+
+func TestReportFallsBackToSingleMetricEndpoint(t *testing.T) {
+	var (
+		mu            sync.Mutex
+		batchRequests int
+		singleMetrics []models.Metrics
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("expected Content-Type application/json, got %q", got)
+		}
+		if got := r.Header.Get("Content-Encoding"); got != "gzip" {
+			t.Fatalf("expected Content-Encoding gzip, got %q", got)
+		}
+		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Fatalf("expected Accept-Encoding gzip, got %q", got)
+		}
+
+		defer func() {
+			_ = r.Body.Close()
+		}()
+
+		switch r.URL.Path {
+		case "/updates/":
+			mu.Lock()
+			batchRequests++
+			mu.Unlock()
+			w.WriteHeader(http.StatusNotFound)
+		case "/update":
+			gzipReader, err := gzip.NewReader(r.Body)
+			if err != nil {
+				t.Fatalf("failed to create gzip reader: %v", err)
+			}
+			defer func() {
+				_ = gzipReader.Close()
+			}()
+
+			var m models.Metrics
+			if err = gojson.NewDecoder(gzipReader).Decode(&m); err != nil {
+				t.Fatalf("failed to decode single metric request body: %v", err)
+			}
+
+			mu.Lock()
+			singleMetrics = append(singleMetrics, m)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 10, 5)
+	gv := 1.5
+	a.gauges["Alloc"] = gv
+	a.counters["PollCount"] = 2
+
+	a.report()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if batchRequests != 1 {
+		t.Fatalf("expected one batch request, got %d", batchRequests)
+	}
+	if len(singleMetrics) != 2 {
+		t.Fatalf("expected 2 fallback metric requests, got %d", len(singleMetrics))
 	}
 }

@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"errors"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
@@ -11,6 +12,13 @@ import (
 	"sort"
 	"strconv"
 	"time"
+)
+
+var (
+	errMetricNameRequired    = errors.New("metric name is required")
+	errGaugeValueRequired    = errors.New("gauge value is required")
+	errCounterDeltaRequired  = errors.New("counter delta is required")
+	errUnsupportedMetricType = errors.New("unsupported metric type")
 )
 
 type Handler struct {
@@ -153,12 +161,13 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if statusCode, err := validateUpdateMetric(metric); err != nil {
+		http.Error(w, err.Error(), statusCode)
+		return
+	}
+
 	switch metric.MType {
 	case models.Gauge:
-		if metric.Value == nil {
-			http.Error(w, "gauge value is required", http.StatusBadRequest)
-			return
-		}
 		if err := h.storage.UpdateGauge(metric.ID, *metric.Value); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -167,10 +176,6 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 		metric.Value = &value
 		metric.Delta = nil
 	case models.Counter:
-		if metric.Delta == nil {
-			http.Error(w, "counter delta is required", http.StatusBadRequest)
-			return
-		}
 		if err := h.storage.UpdateCounter(metric.ID, *metric.Delta); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -178,9 +183,6 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 		delta, _ := h.storage.GetCounter(metric.ID)
 		metric.Delta = &delta
 		metric.Value = nil
-	default:
-		http.Error(w, "unsupported metric type", http.StatusBadRequest)
-		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -188,6 +190,37 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+func (h *Handler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		_ = r.Body.Close()
+	}()
+
+	var metrics []models.Metrics
+	if err := gojson.NewDecoder(r.Body).Decode(&metrics); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if len(metrics) == 0 {
+		http.Error(w, "metrics batch is empty", http.StatusBadRequest)
+		return
+	}
+
+	for _, metric := range metrics {
+		if statusCode, err := validateUpdateMetric(metric); err != nil {
+			http.Error(w, err.Error(), statusCode)
+			return
+		}
+	}
+
+	if err := h.storage.UpdateMetrics(metrics); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 // Инкремент 3
@@ -328,4 +361,25 @@ func (h *Handler) GetAllMetrics(w http.ResponseWriter, _ *http.Request) {
 	if _, err := w.Write(buf.Bytes()); err != nil {
 		return
 	}
+}
+
+func validateUpdateMetric(metric models.Metrics) (int, error) {
+	if metric.ID == "" {
+		return http.StatusNotFound, errMetricNameRequired
+	}
+
+	switch metric.MType {
+	case models.Gauge:
+		if metric.Value == nil {
+			return http.StatusBadRequest, errGaugeValueRequired
+		}
+	case models.Counter:
+		if metric.Delta == nil {
+			return http.StatusBadRequest, errCounterDeltaRequired
+		}
+	default:
+		return http.StatusBadRequest, errUnsupportedMetricType
+	}
+
+	return http.StatusOK, nil
 }

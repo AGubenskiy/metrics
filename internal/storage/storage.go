@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,6 +40,35 @@ func (m *MemStorage) UpdateGauge(name string, value float64) error {
 func (m *MemStorage) UpdateCounter(name string, value int64) error {
 	m.mu.Lock()
 	m.counters[name] += value
+	onUpdate := m.onUpdate
+	m.mu.Unlock()
+
+	if onUpdate != nil {
+		return onUpdate()
+	}
+	return nil
+}
+
+func (m *MemStorage) UpdateMetrics(metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	for _, metric := range metrics {
+		if err := validateMetric(metric); err != nil {
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	for _, metric := range metrics {
+		switch metric.MType {
+		case models.Gauge:
+			m.gauges[metric.ID] = *metric.Value
+		case models.Counter:
+			m.counters[metric.ID] += *metric.Delta
+		}
+	}
 	onUpdate := m.onUpdate
 	m.mu.Unlock()
 
@@ -209,4 +239,25 @@ func (m *MemStorage) snapshot() []models.Metrics {
 	}
 
 	return metrics
+}
+
+func validateMetric(metric models.Metrics) error {
+	if metric.ID == "" {
+		return errors.New("metric name is required")
+	}
+
+	switch metric.MType {
+	case models.Gauge:
+		if metric.Value == nil {
+			return errors.New("gauge value is required")
+		}
+	case models.Counter:
+		if metric.Delta == nil {
+			return errors.New("counter delta is required")
+		}
+	default:
+		return errors.New("unsupported metric type")
+	}
+
+	return nil
 }

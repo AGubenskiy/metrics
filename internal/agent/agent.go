@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -105,9 +106,24 @@ func (a *Agent) poll() {
 	a.counters["PollCount"]++
 }
 func (a *Agent) report() {
+	metrics := a.collectMetricsBatch()
+	if len(metrics) == 0 {
+		return
+	}
+
+	if a.sendMetricsBatch(metrics) {
+		for _, metric := range metrics {
+			a.sendMetric(metric)
+		}
+	}
+}
+
+func (a *Agent) collectMetricsBatch() []models.Metrics {
+	metrics := make([]models.Metrics, 0, len(a.gauges)+len(a.counters))
+
 	for name, value := range a.gauges {
 		gaugeValue := value
-		a.sendMetric(models.Metrics{
+		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
 			Value: &gaugeValue,
@@ -116,12 +132,50 @@ func (a *Agent) report() {
 
 	for name, value := range a.counters {
 		counterDelta := value
-		a.sendMetric(models.Metrics{
+		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Counter,
 			Delta: &counterDelta,
 		})
 	}
+
+	return metrics
+}
+
+// sendMetricsBatch returns true when caller should fallback to old single-metric API.
+func (a *Agent) sendMetricsBatch(metrics []models.Metrics) bool {
+	logFields := []zap.Field{
+		zap.Int("metrics_count", len(metrics)),
+	}
+
+	body, err := gojson.Marshal(metrics)
+	if err != nil {
+		a.logger.Error("failed to marshal metrics batch", append(logFields, zap.Error(err))...)
+		return false
+	}
+
+	statusCode, err := a.sendCompressedJSON("/updates/", body)
+	if err != nil {
+		a.logger.Error("failed to send metrics batch", append(logFields, zap.Error(err))...)
+		return false
+	}
+
+	if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed {
+		a.logger.Warn(
+			"batch endpoint is not supported, fallback to single metric updates",
+			append(logFields, zap.Int("status_code", statusCode))...,
+		)
+		return true
+	}
+
+	if statusCode != http.StatusOK {
+		a.logger.Warn(
+			"server returned not OK status for metrics batch",
+			append(logFields, zap.Int("status_code", statusCode))...,
+		)
+	}
+
+	return false
 }
 
 func (a *Agent) sendMetric(metric models.Metrics) {
@@ -136,28 +190,27 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 		return
 	}
 
-	var compressedBody bytes.Buffer
-	gzipWriter := gzip.NewWriter(&compressedBody)
-	if _, err = gzipWriter.Write(body); err != nil {
-		if closeErr := gzipWriter.Close(); closeErr != nil {
-			a.logger.Error("failed to close gzip writer after write error", append(logFields, zap.Error(closeErr))...)
-		}
-		a.logger.Error("failed to gzip metric payload", append(logFields, zap.Error(err))...)
-		return
-	}
-	if err = gzipWriter.Close(); err != nil {
-		a.logger.Error("failed to close gzip writer", append(logFields, zap.Error(err))...)
+	statusCode, err := a.sendCompressedJSON("/update", body)
+	if err != nil {
+		a.logger.Error("failed to send metric", append(logFields, zap.Error(err))...)
 		return
 	}
 
-	url := fmt.Sprintf("%s/update", a.serverAddr)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody.Bytes()))
+	if statusCode != http.StatusOK {
+		a.logger.Warn("server returned not OK status", append(logFields, zap.Int("status_code", statusCode))...)
+	}
+}
+
+func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
+	compressedBody, err := gzipPayload(body)
 	if err != nil {
-		a.logger.Error(
-			"failed to build metric request",
-			append(logFields, zap.Error(err), zap.String("url", url))...,
-		)
-		return
+		return 0, err
+	}
+
+	url := a.buildURL(path)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody))
+	if err != nil {
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
@@ -165,30 +218,20 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		a.logger.Error("failed to send metric", append(logFields, zap.Error(err), zap.String("url", url))...)
-		return
+		return 0, err
 	}
 	if resp == nil {
-		a.logger.Error("received nil response while sending metric", append(logFields, zap.String("url", url))...)
-		return
+		return 0, fmt.Errorf("received nil response for url %s", url)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
-	if resp.StatusCode != http.StatusOK {
-		a.logger.Warn(
-			"server returned not OK status",
-			append(logFields, zap.Int("status_code", resp.StatusCode), zap.String("status", resp.Status))...,
-		)
-	}
-
 	responseBody := io.Reader(resp.Body)
 	if hasGzipEncoding(resp.Header.Get("Content-Encoding")) {
 		gzipReader, gzipErr := gzip.NewReader(resp.Body)
 		if gzipErr != nil {
-			a.logger.Error("failed to create gzip reader for response", append(logFields, zap.Error(gzipErr))...)
-			return
+			return 0, gzipErr
 		}
 		defer func() {
 			_ = gzipReader.Close()
@@ -197,9 +240,32 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 	}
 
 	if _, err = io.Copy(io.Discard, responseBody); err != nil {
-		a.logger.Error("failed to read response body", append(logFields, zap.Error(err))...)
-		return
+		return 0, err
 	}
+
+	return resp.StatusCode, nil
+}
+
+func (a *Agent) buildURL(path string) string {
+	return strings.TrimRight(a.serverAddr, "/") + path
+}
+
+func gzipPayload(body []byte) ([]byte, error) {
+	var compressedBody bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressedBody)
+	if _, err := gzipWriter.Write(body); err != nil {
+		closeErr := gzipWriter.Close()
+		if closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
+		return nil, err
+	}
+
+	if err := gzipWriter.Close(); err != nil {
+		return nil, err
+	}
+
+	return compressedBody.Bytes(), nil
 }
 
 func hasGzipEncoding(headerValue string) bool {

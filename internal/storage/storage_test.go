@@ -90,3 +90,40 @@ func TestSyncSaveOnUpdate(t *testing.T) {
 		t.Fatalf("unexpected saved metric: %+v", metrics[0])
 	}
 }
+
+func TestUpdateMetrics(t *testing.T) {
+	s := NewMemStorage()
+	initialCounter := int64(4)
+	if err := s.UpdateCounter("PollCount", initialCounter); err != nil {
+		t.Fatalf("failed to set initial counter value: %v", err)
+	}
+
+	gaugeValue := 42.5
+	counterDelta := int64(3)
+	metrics := []models.Metrics{
+		{
+			ID:    "Alloc",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+		{
+			ID:    "PollCount",
+			MType: models.Counter,
+			Delta: &counterDelta,
+		},
+	}
+
+	if err := s.UpdateMetrics(metrics); err != nil {
+		t.Fatalf("failed to batch update metrics: %v", err)
+	}
+
+	gauge, ok := s.GetGauge("Alloc")
+	if !ok || gauge != gaugeValue {
+		t.Fatalf("expected gauge Alloc=%v, got %v (ok=%v)", gaugeValue, gauge, ok)
+	}
+
+	counter, ok := s.GetCounter("PollCount")
+	if !ok || counter != initialCounter+counterDelta {
+		t.Fatalf("expected counter PollCount=%v, got %v (ok=%v)", initialCounter+counterDelta, counter, ok)
+	}
+}
