@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/AGubenskiy/metrics/internal/service"
 	"github.com/AGubenskiy/metrics/internal/signing"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
@@ -29,7 +30,7 @@ func (m *mockPinger) PingContext(_ context.Context) error {
 
 func setupRouter() http.Handler {
 	store := storage.NewMemStorage()
-	h := NewHandler(store)
+	h := NewHandler(service.NewMetrics(store))
 
 	r := chi.NewRouter()
 	r.Use(middleware.Gzip)
@@ -49,7 +50,7 @@ func setupRouter() http.Handler {
 
 func setupRouterWithKey(key string) http.Handler {
 	store := storage.NewMemStorage()
-	h := NewHandler(store)
+	h := NewHandler(service.NewMetrics(store))
 
 	r := chi.NewRouter()
 	r.Use(middleware.Gzip)
@@ -70,7 +71,7 @@ func setupRouterWithKey(key string) http.Handler {
 
 func setupRouterWithPinger(pinger Pinger) http.Handler {
 	store := storage.NewMemStorage()
-	h := NewHandlerWithPinger(store, pinger)
+	h := NewHandlerWithPinger(service.NewMetrics(store), pinger)
 
 	r := chi.NewRouter()
 	r.Get("/ping", h.Ping)

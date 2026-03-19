@@ -6,13 +6,13 @@ import (
 	models "github.com/AGubenskiy/metrics/internal/model"
 )
 
-type Storage interface {
-	UpdateGauge(name string, value float64) error
-	UpdateCounter(name string, value int64) error
-	UpdateMetrics(metrics []models.Metrics) error
-	GetGauge(name string) (float64, bool)
-	GetCounter(name string) (int64, bool)
-	GetAll() (map[string]float64, map[string]int64)
+type MetricsService interface {
+	UpdateGauge(ctx context.Context, name string, value float64) error
+	UpdateCounter(ctx context.Context, name string, value int64) error
+	UpdateMetrics(ctx context.Context, metrics []models.Metrics) error
+	GetGauge(ctx context.Context, name string) (float64, bool)
+	GetCounter(ctx context.Context, name string) (int64, bool)
+	GetAll(ctx context.Context) (map[string]float64, map[string]int64)
 }
 
 type Pinger interface {

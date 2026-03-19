@@ -38,25 +38,25 @@ func NewPostgresStorage(db *sql.DB) *PostgresStorage {
 	}
 }
 
-func (s *PostgresStorage) UpdateGauge(name string, value float64) error {
+func (s *PostgresStorage) UpdateGauge(ctx context.Context, name string, value float64) error {
 	return s.retry(func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 		defer cancel()
 
 		return updateGauge(ctx, s.db, name, value)
 	})
 }
 
-func (s *PostgresStorage) UpdateCounter(name string, value int64) error {
+func (s *PostgresStorage) UpdateCounter(ctx context.Context, name string, value int64) error {
 	return s.retry(func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 		defer cancel()
 
 		return updateCounter(ctx, s.db, name, value)
 	})
 }
 
-func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) (err error) {
+func (s *PostgresStorage) UpdateMetrics(ctx context.Context, metrics []models.Metrics) (err error) {
 	if len(metrics) == 0 {
 		return nil
 	}
@@ -68,7 +68,7 @@ func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) (err error) {
 	}
 
 	err = s.retry(func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 		defer cancel()
 
 		tx, txErr := s.db.BeginTx(ctx, nil)
@@ -99,8 +99,8 @@ func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) (err error) {
 	return err
 }
 
-func (s *PostgresStorage) GetGauge(name string) (float64, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+func (s *PostgresStorage) GetGauge(ctx context.Context, name string) (float64, bool) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
 	var value float64
@@ -117,8 +117,8 @@ func (s *PostgresStorage) GetGauge(name string) (float64, bool) {
 	return value, true
 }
 
-func (s *PostgresStorage) GetCounter(name string) (int64, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+func (s *PostgresStorage) GetCounter(ctx context.Context, name string) (int64, bool) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
 	var value int64
@@ -135,8 +135,8 @@ func (s *PostgresStorage) GetCounter(name string) (int64, bool) {
 	return value, true
 }
 
-func (s *PostgresStorage) GetAll() (map[string]float64, map[string]int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+func (s *PostgresStorage) GetAll(ctx context.Context) (map[string]float64, map[string]int64) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
 	rows, err := s.db.QueryContext(

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -25,7 +26,7 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
-func (m *MemStorage) UpdateGauge(name string, value float64) error {
+func (m *MemStorage) UpdateGauge(_ context.Context, name string, value float64) error {
 	m.mu.Lock()
 	m.gauges[name] = value
 	onUpdate := m.onUpdate
@@ -37,7 +38,7 @@ func (m *MemStorage) UpdateGauge(name string, value float64) error {
 	return nil
 }
 
-func (m *MemStorage) UpdateCounter(name string, value int64) error {
+func (m *MemStorage) UpdateCounter(_ context.Context, name string, value int64) error {
 	m.mu.Lock()
 	m.counters[name] += value
 	onUpdate := m.onUpdate
@@ -49,7 +50,7 @@ func (m *MemStorage) UpdateCounter(name string, value int64) error {
 	return nil
 }
 
-func (m *MemStorage) UpdateMetrics(metrics []models.Metrics) error {
+func (m *MemStorage) UpdateMetrics(_ context.Context, metrics []models.Metrics) error {
 	if len(metrics) == 0 {
 		return nil
 	}
@@ -79,19 +80,19 @@ func (m *MemStorage) UpdateMetrics(metrics []models.Metrics) error {
 }
 
 // Инкремент 3
-func (m *MemStorage) GetGauge(name string) (float64, bool) {
+func (m *MemStorage) GetGauge(_ context.Context, name string) (float64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	value, ok := m.gauges[name]
 	return value, ok
 }
-func (m *MemStorage) GetCounter(name string) (int64, bool) {
+func (m *MemStorage) GetCounter(_ context.Context, name string) (int64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	value, ok := m.counters[name]
 	return value, ok
 }
-func (m *MemStorage) GetAll() (map[string]float64, map[string]int64) {
+func (m *MemStorage) GetAll(_ context.Context) (map[string]float64, map[string]int64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	//return m.gauges, m.counters

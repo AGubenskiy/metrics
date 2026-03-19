@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	gojson "github.com/goccy/go-json"
 	"os"
@@ -11,10 +12,10 @@ import (
 func TestCounterAccumulation(t *testing.T) {
 	s := NewMemStorage()
 
-	if err := s.UpdateCounter("c", 10); err != nil {
+	if err := s.UpdateCounter(context.Background(), "c", 10); err != nil {
 		t.Fatalf("failed to update counter: %v", err)
 	}
-	if err := s.UpdateCounter("c", 5); err != nil {
+	if err := s.UpdateCounter(context.Background(), "c", 5); err != nil {
 		t.Fatalf("failed to update counter: %v", err)
 	}
 
@@ -25,10 +26,10 @@ func TestCounterAccumulation(t *testing.T) {
 
 func TestSaveAndLoadFromFile(t *testing.T) {
 	s := NewMemStorage()
-	if err := s.UpdateGauge("Alloc", 12.5); err != nil {
+	if err := s.UpdateGauge(context.Background(), "Alloc", 12.5); err != nil {
 		t.Fatalf("failed to update gauge: %v", err)
 	}
-	if err := s.UpdateCounter("PollCount", 3); err != nil {
+	if err := s.UpdateCounter(context.Background(), "PollCount", 3); err != nil {
 		t.Fatalf("failed to update counter: %v", err)
 	}
 
@@ -42,12 +43,12 @@ func TestSaveAndLoadFromFile(t *testing.T) {
 		t.Fatalf("failed to load metrics: %v", err)
 	}
 
-	gauge, ok := restored.GetGauge("Alloc")
+	gauge, ok := restored.GetGauge(context.Background(), "Alloc")
 	if !ok || gauge != 12.5 {
 		t.Fatalf("expected gauge Alloc=12.5, got %v (ok=%v)", gauge, ok)
 	}
 
-	counter, ok := restored.GetCounter("PollCount")
+	counter, ok := restored.GetCounter(context.Background(), "PollCount")
 	if !ok || counter != 3 {
 		t.Fatalf("expected counter PollCount=3, got %v (ok=%v)", counter, ok)
 	}
@@ -70,7 +71,7 @@ func TestSyncSaveOnUpdate(t *testing.T) {
 		return s.SaveToFile(filePath)
 	})
 
-	if err := s.UpdateGauge("RandomValue", 99.9); err != nil {
+	if err := s.UpdateGauge(context.Background(), "RandomValue", 99.9); err != nil {
 		t.Fatalf("failed to update gauge with sync save: %v", err)
 	}
 
@@ -94,7 +95,7 @@ func TestSyncSaveOnUpdate(t *testing.T) {
 func TestUpdateMetrics(t *testing.T) {
 	s := NewMemStorage()
 	initialCounter := int64(4)
-	if err := s.UpdateCounter("PollCount", initialCounter); err != nil {
+	if err := s.UpdateCounter(context.Background(), "PollCount", initialCounter); err != nil {
 		t.Fatalf("failed to set initial counter value: %v", err)
 	}
 
@@ -113,16 +114,16 @@ func TestUpdateMetrics(t *testing.T) {
 		},
 	}
 
-	if err := s.UpdateMetrics(metrics); err != nil {
+	if err := s.UpdateMetrics(context.Background(), metrics); err != nil {
 		t.Fatalf("failed to batch update metrics: %v", err)
 	}
 
-	gauge, ok := s.GetGauge("Alloc")
+	gauge, ok := s.GetGauge(context.Background(), "Alloc")
 	if !ok || gauge != gaugeValue {
 		t.Fatalf("expected gauge Alloc=%v, got %v (ok=%v)", gaugeValue, gauge, ok)
 	}
 
-	counter, ok := s.GetCounter("PollCount")
+	counter, ok := s.GetCounter(context.Background(), "PollCount")
 	if !ok || counter != initialCounter+counterDelta {
 		t.Fatalf("expected counter PollCount=%v, got %v (ok=%v)", initialCounter+counterDelta, counter, ok)
 	}

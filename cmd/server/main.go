@@ -19,6 +19,7 @@ import (
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	"github.com/AGubenskiy/metrics/internal/repository"
+	"github.com/AGubenskiy/metrics/internal/service"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
@@ -75,7 +76,7 @@ func main() {
 		setFlags["r"]
 
 	var (
-		store        handler.Storage
+		store        service.Repository
 		pinger       handler.Pinger
 		storageMode  string
 		stopAndFlush = func() {}
@@ -125,7 +126,8 @@ func main() {
 	}
 	defer stopAndFlush()
 
-	h := handler.NewHandlerWithPinger(store, pinger)
+	metricsService := service.NewMetrics(store)
+	h := handler.NewHandlerWithPinger(metricsService, pinger)
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatalf("cannot initialize logger: %v", err)

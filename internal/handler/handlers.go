@@ -22,7 +22,7 @@ var (
 )
 
 type Handler struct {
-	storage Storage
+	service MetricsService
 	pinger  Pinger
 }
 
@@ -90,13 +90,13 @@ var metricsPageTmpl = template.Must(template.New("metrics-page").Parse(`
 </html>
 `))
 
-func NewHandler(s Storage) *Handler {
-	return &Handler{storage: s}
+func NewHandler(s MetricsService) *Handler {
+	return &Handler{service: s}
 }
 
-func NewHandlerWithPinger(s Storage, pinger Pinger) *Handler {
+func NewHandlerWithPinger(s MetricsService, pinger Pinger) *Handler {
 	return &Handler{
-		storage: s,
+		service: s,
 		pinger:  pinger,
 	}
 }
@@ -112,24 +112,24 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch metricType {
-	case "gauge":
+	case models.Gauge:
 		value, err := strconv.ParseFloat(metricValue, 64)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if err = h.storage.UpdateGauge(metricName, value); err != nil {
+		if err = h.service.UpdateGauge(r.Context(), metricName, value); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-	case "counter":
+	case models.Counter:
 		value, err := strconv.ParseInt(metricValue, 10, 64)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if err = h.storage.UpdateCounter(metricName, value); err != nil {
+		if err = h.service.UpdateCounter(r.Context(), metricName, value); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -168,19 +168,19 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 
 	switch metric.MType {
 	case models.Gauge:
-		if err := h.storage.UpdateGauge(metric.ID, *metric.Value); err != nil {
+		if err := h.service.UpdateGauge(r.Context(), metric.ID, *metric.Value); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		value, _ := h.storage.GetGauge(metric.ID)
+		value, _ := h.service.GetGauge(r.Context(), metric.ID)
 		metric.Value = &value
 		metric.Delta = nil
 	case models.Counter:
-		if err := h.storage.UpdateCounter(metric.ID, *metric.Delta); err != nil {
+		if err := h.service.UpdateCounter(r.Context(), metric.ID, *metric.Delta); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		delta, _ := h.storage.GetCounter(metric.ID)
+		delta, _ := h.service.GetCounter(r.Context(), metric.ID)
 		metric.Delta = &delta
 		metric.Value = nil
 	}
@@ -215,7 +215,7 @@ func (h *Handler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.storage.UpdateMetrics(metrics); err != nil {
+	if err := h.service.UpdateMetrics(r.Context(), metrics); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -229,8 +229,8 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 	metricName := chi.URLParam(r, "name")
 
 	switch metricType {
-	case "gauge":
-		value, ok := h.storage.GetGauge(metricName)
+	case models.Gauge:
+		value, ok := h.service.GetGauge(r.Context(), metricName)
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -240,8 +240,8 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-	case "counter":
-		value, ok := h.storage.GetCounter(metricName)
+	case models.Counter:
+		value, ok := h.service.GetCounter(r.Context(), metricName)
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -274,7 +274,7 @@ func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
 
 	switch metric.MType {
 	case models.Gauge:
-		value, ok := h.storage.GetGauge(metric.ID)
+		value, ok := h.service.GetGauge(r.Context(), metric.ID)
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -282,7 +282,7 @@ func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
 		metric.Value = &value
 		metric.Delta = nil
 	case models.Counter:
-		value, ok := h.storage.GetCounter(metric.ID)
+		value, ok := h.service.GetCounter(r.Context(), metric.ID)
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -318,8 +318,8 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) GetAllMetrics(w http.ResponseWriter, _ *http.Request) {
-	gauges, counters := h.storage.GetAll()
+func (h *Handler) GetAllMetrics(w http.ResponseWriter, r *http.Request) {
+	gauges, counters := h.service.GetAll(r.Context())
 
 	gaugeNames := make([]string, 0, len(gauges))
 	for name := range gauges {
