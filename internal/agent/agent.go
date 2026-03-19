@@ -16,6 +16,7 @@ import (
 	"time"
 
 	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/AGubenskiy/metrics/internal/signing"
 	gojson "github.com/goccy/go-json"
 	"go.uber.org/zap"
 )
@@ -31,9 +32,10 @@ type Agent struct {
 	logger      *zap.Logger
 	retryDelays []time.Duration
 	sleep       func(time.Duration)
+	key         string
 }
 
-func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
+func NewAgent(serverAddr string, reportInterval int, pollInterval int, key string) *Agent {
 	return &Agent{
 		serverAddr:     serverAddr,
 		pollInterval:   time.Duration(pollInterval) * time.Second,
@@ -47,6 +49,7 @@ func NewAgent(serverAddr string, reportInterval int, pollInterval int) *Agent {
 		logger:      zap.NewNop(),
 		retryDelays: []time.Duration{1 * time.Second, 3 * time.Second, 5 * time.Second},
 		sleep:       time.Sleep,
+		key:         key,
 	}
 }
 
@@ -221,6 +224,9 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	if a.key != "" {
+		req.Header.Set(signing.HeaderName, signing.Hash(body, a.key))
+	}
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {

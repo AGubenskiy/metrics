@@ -23,6 +23,7 @@ func main() {
 	addr := flag.String("a", defaultAddr, "server address")
 	reportInterval := flag.Int("r", defaultReportInterval, "report interval in seconds")
 	pollInterval := flag.Int("p", defaultPollInterval, "poll interval in seconds")
+	key := flag.String("k", "", "hash key")
 	flag.Parse()
 
 	setFlags := map[string]bool{}
@@ -59,6 +60,13 @@ func main() {
 		finalPollInterval = *pollInterval
 	}
 
+	finalKey := ""
+	if envKey := os.Getenv("KEY"); envKey != "" {
+		finalKey = envKey
+	} else if setFlags["k"] {
+		finalKey = *key
+	}
+
 	log.Printf(
 		"Agent started: addr=http://%s, report=%v, poll=%v",
 		finalAddr,
@@ -76,7 +84,7 @@ func main() {
 		}
 	}()
 
-	a := agent.NewAgent("http://"+finalAddr, finalReportInterval, finalPollInterval)
+	a := agent.NewAgent("http://"+finalAddr, finalReportInterval, finalPollInterval, finalKey)
 	a.SetLogger(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

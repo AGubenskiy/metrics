@@ -40,6 +40,7 @@ func main() {
 	fileStoragePath := flag.String("f", defaultFileStoragePath, "file storage path")
 	restore := flag.Bool("r", defaultRestore, "restore metrics from file at startup")
 	databaseDSN := flag.String("d", defaultDatabaseDSN, "database connection DSN")
+	key := flag.String("k", "", "hash key")
 	flag.Parse()
 
 	setFlags := map[string]bool{}
@@ -65,6 +66,7 @@ func main() {
 	}
 
 	finalDatabaseDSN := resolveStringSetting("DATABASE_DSN", setFlags["d"], *databaseDSN, defaultDatabaseDSN)
+	finalKey := resolveStringSetting("KEY", setFlags["k"], *key, "")
 	fileStorageConfigured := isNonEmptyEnv("FILE_STORAGE_PATH") ||
 		isNonEmptyEnv("STORE_INTERVAL") ||
 		isNonEmptyEnv("RESTORE") ||
@@ -137,6 +139,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
 	r.Use(middleware.Gzip)
+	r.Use(middleware.Hash(finalKey))
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
 	r.Post("/update", h.UpdateMetricJSON)
 	r.Post("/update/", h.UpdateMetricJSON)

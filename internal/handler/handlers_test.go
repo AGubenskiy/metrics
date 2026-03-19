@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/AGubenskiy/metrics/internal/signing"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
 	"io"
@@ -32,6 +33,27 @@ func setupRouter() http.Handler {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Gzip)
+	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
+	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/update/", h.UpdateMetricJSON)
+	r.Post("/updates", h.UpdateMetricsJSON)
+	r.Post("/updates/", h.UpdateMetricsJSON)
+	r.Get("/value/{type}/{name}", h.GetMetricValue)
+	r.Post("/value", h.GetMetricValueJSON)
+	r.Post("/value/", h.GetMetricValueJSON)
+	r.Get("/", h.GetAllMetrics)
+	r.Get("/ping", h.Ping)
+
+	return r
+}
+
+func setupRouterWithKey(key string) http.Handler {
+	store := storage.NewMemStorage()
+	h := NewHandler(store)
+
+	r := chi.NewRouter()
+	r.Use(middleware.Gzip)
+	r.Use(middleware.Hash(key))
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
 	r.Post("/update", h.UpdateMetricJSON)
 	r.Post("/update/", h.UpdateMetricJSON)
@@ -304,6 +326,56 @@ func TestUpdateMetricJSONWithGzipBody(t *testing.T) {
 	}
 }
 
+func TestUpdateMetricJSONRejectsInvalidHash(t *testing.T) {
+	router := setupRouterWithKey("test-key")
+
+	gaugeValue := 7.7
+	body, err := gojson.Marshal(models.Metrics{
+		ID:    "signedGauge",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(signing.HeaderName, "invalid")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestUpdateMetricJSONAcceptsValidHash(t *testing.T) {
+	router := setupRouterWithKey("test-key")
+
+	gaugeValue := 7.7
+	body, err := gojson.Marshal(models.Metrics{
+		ID:    "signedGauge",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(signing.HeaderName, signing.Hash(body, "test-key"))
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+}
+
 func TestGzipResponseForJSON(t *testing.T) {
 	router := setupRouter()
 
@@ -342,6 +414,45 @@ func TestGzipResponseForJSON(t *testing.T) {
 	}
 	if got.Value == nil || *got.Value != gaugeValue {
 		t.Fatalf("expected value %f, got %+v", gaugeValue, got)
+	}
+}
+
+func TestJSONResponseContainsHashHeaderWhenKeyConfigured(t *testing.T) {
+	router := setupRouterWithKey("test-key")
+
+	gaugeValue := 11.11
+	updateBody, _ := gojson.Marshal(models.Metrics{
+		ID:    "jsonSigned",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+	updateReq := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(updateBody))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateReq.Header.Set(signing.HeaderName, signing.Hash(updateBody, "test-key"))
+	router.ServeHTTP(httptest.NewRecorder(), updateReq)
+
+	valueBody, _ := gojson.Marshal(models.Metrics{
+		ID:    "jsonSigned",
+		MType: models.Gauge,
+	})
+	valueReq := httptest.NewRequest(http.MethodPost, "/value", bytes.NewReader(valueBody))
+	valueReq.Header.Set("Content-Type", "application/json")
+	valueReq.Header.Set(signing.HeaderName, signing.Hash(valueBody, "test-key"))
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, valueReq)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	responseHash := rr.Header().Get(signing.HeaderName)
+	if responseHash == "" {
+		t.Fatalf("expected %s header to be set", signing.HeaderName)
+	}
+
+	if expected := signing.Hash(rr.Body.Bytes(), "test-key"); responseHash != expected {
+		t.Fatalf("expected %s %q, got %q", signing.HeaderName, expected, responseHash)
 	}
 }
 

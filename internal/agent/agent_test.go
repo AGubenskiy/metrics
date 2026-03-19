@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"errors"
 	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/AGubenskiy/metrics/internal/signing"
 	gojson "github.com/goccy/go-json"
 	"io"
 	"net/http"
@@ -16,7 +17,7 @@ import (
 )
 
 func TestPollIncrementsCounter(t *testing.T) {
-	a := NewAgent("http://localhost:8080", 10, 5)
+	a := NewAgent("http://localhost:8080", 10, 5, "")
 
 	a.poll()
 	a.poll()
@@ -47,6 +48,9 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 		}
 		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
 			t.Fatalf("expected Accept-Encoding gzip, got %q", got)
+		}
+		if got := r.Header.Get(signing.HeaderName); got != "" {
+			t.Fatalf("expected empty %s header, got %q", signing.HeaderName, got)
 		}
 
 		defer func() {
@@ -88,7 +92,7 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := NewAgent(srv.URL, 10, 5)
+	a := NewAgent(srv.URL, 10, 5, "")
 	gv := 12.5
 	a.gauges["Alloc"] = gv
 	a.counters["PollCount"] = 3
@@ -170,7 +174,7 @@ func TestReportFallsBackToSingleMetricEndpoint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := NewAgent(srv.URL, 10, 5)
+	a := NewAgent(srv.URL, 10, 5, "")
 	gv := 1.5
 	a.gauges["Alloc"] = gv
 	a.counters["PollCount"] = 2
@@ -191,7 +195,7 @@ func TestReportFallsBackToSingleMetricEndpoint(t *testing.T) {
 func TestSendCompressedJSONWithRetry_RetriesTemporaryNetworkErrors(t *testing.T) {
 	attempts := 0
 
-	a := NewAgent("http://example.com", 10, 5)
+	a := NewAgent("http://example.com", 10, 5, "")
 	a.retryDelays = []time.Duration{0, 0, 0}
 	a.sleep = func(time.Duration) {}
 	a.httpClient = &http.Client{
@@ -228,7 +232,7 @@ func TestSendCompressedJSONWithRetry_RetriesTemporaryNetworkErrors(t *testing.T)
 func TestSendCompressedJSONWithRetry_DoesNotRetryNonRetriableErrors(t *testing.T) {
 	attempts := 0
 
-	a := NewAgent("http://example.com", 10, 5)
+	a := NewAgent("http://example.com", 10, 5, "")
 	a.retryDelays = []time.Duration{0, 0, 0}
 	a.sleep = func(time.Duration) {}
 	a.httpClient = &http.Client{
@@ -247,6 +251,49 @@ func TestSendCompressedJSONWithRetry_DoesNotRetryNonRetriableErrors(t *testing.T
 	}
 	if attempts != 1 {
 		t.Fatalf("expected 1 attempt, got %d", attempts)
+	}
+}
+
+func TestReportSignsRequestBodyWhenKeyConfigured(t *testing.T) {
+	var receivedHash string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHash = r.Header.Get(signing.HeaderName)
+
+		defer func() {
+			_ = r.Body.Close()
+		}()
+
+		gzipReader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer func() {
+			_ = gzipReader.Close()
+		}()
+
+		body, err := io.ReadAll(gzipReader)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+
+		expectedHash := signing.Hash(body, "test-key")
+		if receivedHash != expectedHash {
+			t.Fatalf("expected %s %q, got %q", signing.HeaderName, expectedHash, receivedHash)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 10, 5, "test-key")
+	value := 3.14
+	a.gauges["Alloc"] = value
+
+	a.report()
+
+	if receivedHash == "" {
+		t.Fatalf("expected %s header to be set", signing.HeaderName)
 	}
 }
 
