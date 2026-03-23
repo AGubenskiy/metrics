@@ -3,7 +3,9 @@ package agent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
+	"fmt"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/AGubenskiy/metrics/internal/signing"
 	gojson "github.com/goccy/go-json"
@@ -11,9 +13,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
 func TestPollIncrementsCounter(t *testing.T) {
@@ -24,6 +30,37 @@ func TestPollIncrementsCounter(t *testing.T) {
 
 	if a.counters["PollCount"] != 2 {
 		t.Fatalf("expected PollCount = 2, got %d", a.counters["PollCount"])
+	}
+}
+
+func TestPollSystemCollectsGaugeMetrics(t *testing.T) {
+	a := NewAgent("http://localhost:8080", 10, 5, "")
+	a.readVirtualMemory = func() (*mem.VirtualMemoryStat, error) {
+		return &mem.VirtualMemoryStat{
+			Total: 1024,
+			Free:  256,
+		}, nil
+	}
+	a.readCPUPercent = func() ([]float64, error) {
+		return []float64{11.5, 27.25}, nil
+	}
+
+	a.pollSystem()
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if got := a.gauges["TotalMemory"]; got != 1024 {
+		t.Fatalf("expected TotalMemory=1024, got %v", got)
+	}
+	if got := a.gauges["FreeMemory"]; got != 256 {
+		t.Fatalf("expected FreeMemory=256, got %v", got)
+	}
+	if got := a.gauges["CPUutilization1"]; got != 11.5 {
+		t.Fatalf("expected CPUutilization1=11.5, got %v", got)
+	}
+	if got := a.gauges["CPUutilization2"]; got != 27.25 {
+		t.Fatalf("expected CPUutilization2=27.25, got %v", got)
 	}
 }
 
@@ -192,6 +229,66 @@ func TestReportFallsBackToSingleMetricEndpoint(t *testing.T) {
 	}
 }
 
+func TestReportWithWorkerPoolRespectsRateLimit(t *testing.T) {
+	var (
+		currentRequests int32
+		maxRequests     int32
+		requestsCount   int32
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/updates/" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Path != "/update" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		active := atomic.AddInt32(&currentRequests, 1)
+		defer atomic.AddInt32(&currentRequests, -1)
+		atomic.AddInt32(&requestsCount, 1)
+
+		for {
+			previous := atomic.LoadInt32(&maxRequests)
+			if active <= previous || atomic.CompareAndSwapInt32(&maxRequests, previous, active) {
+				break
+			}
+		}
+
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgentWithRateLimit(srv.URL, 10, 5, 2, "")
+	for i := 0; i < 6; i++ {
+		value := float64(i + 1)
+		a.gauges[fmt.Sprintf("gauge-%d", i)] = value
+	}
+
+	jobs := make(chan sendJob, 12)
+	var workersWG sync.WaitGroup
+	for i := 0; i < a.rateLimit; i++ {
+		workersWG.Add(1)
+		go a.runWorker(jobs, &workersWG)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	a.reportWithWorkerPool(ctx, jobs)
+	close(jobs)
+	workersWG.Wait()
+
+	if got := atomic.LoadInt32(&maxRequests); got > 2 {
+		t.Fatalf("expected at most 2 concurrent requests, got %d", got)
+	}
+	if got := atomic.LoadInt32(&requestsCount); got != 6 {
+		t.Fatalf("expected 6 single metric requests after fallback, got %d", got)
+	}
+}
+
 func TestSendCompressedJSONWithRetry_RetriesTemporaryNetworkErrors(t *testing.T) {
 	attempts := 0
 
@@ -294,6 +391,26 @@ func TestReportSignsRequestBodyWhenKeyConfigured(t *testing.T) {
 
 	if receivedHash == "" {
 		t.Fatalf("expected %s header to be set", signing.HeaderName)
+	}
+}
+
+func TestPollUsesInjectedRuntimeReader(t *testing.T) {
+	a := NewAgent("http://localhost:8080", 10, 5, "")
+	a.readMemStats = func(stats *runtime.MemStats) {
+		stats.Alloc = 42
+		stats.TotalAlloc = 99
+	}
+
+	a.poll()
+
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	if got := a.gauges["Alloc"]; got != 42 {
+		t.Fatalf("expected Alloc=42, got %v", got)
+	}
+	if got := a.gauges["TotalAlloc"]; got != 99 {
+		t.Fatalf("expected TotalAlloc=99, got %v", got)
 	}
 }
 
