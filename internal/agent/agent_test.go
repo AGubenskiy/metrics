@@ -22,6 +22,29 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 )
 
+func runReportWithWorkerPool(t *testing.T, a *Agent) {
+	t.Helper()
+
+	jobsBufferSize := len(a.collectMetricsBatch()) + 1
+	if jobsBufferSize < a.rateLimit {
+		jobsBufferSize = a.rateLimit
+	}
+
+	jobs := make(chan sendJob, jobsBufferSize)
+	var workersWG sync.WaitGroup
+	for i := 0; i < a.rateLimit; i++ {
+		workersWG.Add(1)
+		go a.runWorker(jobs, &workersWG)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	a.reportWithWorkerPool(ctx, jobs)
+	close(jobs)
+	workersWG.Wait()
+}
+
 func TestPollIncrementsCounter(t *testing.T) {
 	a := NewAgent("http://localhost:8080", 10, 5, "")
 
@@ -134,7 +157,7 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 	a.gauges["Alloc"] = gv
 	a.counters["PollCount"] = 3
 
-	a.report()
+	runReportWithWorkerPool(t, a)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -216,7 +239,7 @@ func TestReportFallsBackToSingleMetricEndpoint(t *testing.T) {
 	a.gauges["Alloc"] = gv
 	a.counters["PollCount"] = 2
 
-	a.report()
+	runReportWithWorkerPool(t, a)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -387,7 +410,7 @@ func TestReportSignsRequestBodyWhenKeyConfigured(t *testing.T) {
 	value := 3.14
 	a.gauges["Alloc"] = value
 
-	a.report()
+	runReportWithWorkerPool(t, a)
 
 	if receivedHash == "" {
 		t.Fatalf("expected %s header to be set", signing.HeaderName)
