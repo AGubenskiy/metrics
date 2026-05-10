@@ -116,7 +116,7 @@ func ExampleHandler_GetMetricValueJSON() {
 	server := httptest.NewServer(newExampleRouter(examplePinger{}))
 	defer server.Close()
 
-	_, err := http.Post(
+	updateResp, err := http.Post(
 		server.URL+"/update",
 		"application/json",
 		strings.NewReader(`{"id":"Alloc","type":"gauge","value":42.5}`),
@@ -124,6 +124,9 @@ func ExampleHandler_GetMetricValueJSON() {
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		_ = updateResp.Body.Close()
+	}()
 
 	resp, err := http.Post(
 		server.URL+"/value",
