@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 
+	"github.com/AGubenskiy/metrics/internal/audit"
 	models "github.com/AGubenskiy/metrics/internal/model"
 )
 
@@ -17,4 +18,8 @@ type MetricsService interface {
 
 type Pinger interface {
 	PingContext(ctx context.Context) error
+}
+
+type AuditPublisher interface {
+	Notify(ctx context.Context, event audit.Event) error
 }

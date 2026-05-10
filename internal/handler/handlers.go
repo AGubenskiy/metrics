@@ -4,14 +4,19 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	models "github.com/AGubenskiy/metrics/internal/model"
-	"github.com/go-chi/chi/v5"
-	gojson "github.com/goccy/go-json"
 	"html/template"
+	"log"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/AGubenskiy/metrics/internal/audit"
+	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/go-chi/chi/v5"
+	gojson "github.com/goccy/go-json"
 )
 
 var (
@@ -22,8 +27,9 @@ var (
 )
 
 type Handler struct {
-	service MetricsService
-	pinger  Pinger
+	service        MetricsService
+	pinger         Pinger
+	auditPublisher AuditPublisher
 }
 
 type gaugeMetricRow struct {
@@ -91,13 +97,26 @@ var metricsPageTmpl = template.Must(template.New("metrics-page").Parse(`
 `))
 
 func NewHandler(s MetricsService) *Handler {
-	return &Handler{service: s}
+	return newHandler(s, nil, nil)
 }
 
 func NewHandlerWithPinger(s MetricsService, pinger Pinger) *Handler {
+	return newHandler(s, pinger, nil)
+}
+
+func NewHandlerWithAudit(s MetricsService, pinger Pinger, publisher AuditPublisher) *Handler {
+	return newHandler(s, pinger, publisher)
+}
+
+func newHandler(s MetricsService, pinger Pinger, publisher AuditPublisher) *Handler {
+	if publisher == nil {
+		publisher = audit.NewPublisher()
+	}
+
 	return &Handler{
-		service: s,
-		pinger:  pinger,
+		service:        s,
+		pinger:         pinger,
+		auditPublisher: publisher,
 	}
 }
 
@@ -138,6 +157,8 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+
+	h.publishAudit(metricNamesFromString(metricName), requestIPAddress(r))
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write([]byte("OK")); err != nil {
@@ -185,6 +206,8 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 		metric.Value = nil
 	}
 
+	h.publishAudit(metricNamesFromString(metric.ID), requestIPAddress(r))
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := gojson.NewEncoder(w).Encode(metric); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -219,6 +242,8 @@ func (h *Handler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	h.publishAudit(metricNamesFromBatch(metrics), requestIPAddress(r))
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -382,4 +407,53 @@ func validateUpdateMetric(metric models.Metrics) (int, error) {
 	}
 
 	return http.StatusOK, nil
+}
+
+func (h *Handler) publishAudit(metricNames []string, ipAddress string) {
+	if len(metricNames) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	event := audit.Event{
+		TS:        time.Now().Unix(),
+		Metrics:   metricNames,
+		IPAddress: ipAddress,
+	}
+
+	if err := h.auditPublisher.Notify(ctx, event); err != nil {
+		log.Printf("cannot publish audit event: %v", err)
+	}
+}
+
+func metricNamesFromString(metricName string) []string {
+	if metricName == "" {
+		return nil
+	}
+	return []string{metricName}
+}
+
+func metricNamesFromBatch(metrics []models.Metrics) []string {
+	names := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		if metric.ID != "" {
+			names = append(names, metric.ID)
+		}
+	}
+	return names
+}
+
+func requestIPAddress(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+
+	return strings.TrimSpace(r.RemoteAddr)
 }

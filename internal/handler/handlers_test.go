@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"github.com/AGubenskiy/metrics/internal/audit"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/AGubenskiy/metrics/internal/service"
@@ -24,8 +25,17 @@ type mockPinger struct {
 	err error
 }
 
+type recordingAuditObserver struct {
+	events []audit.Event
+}
+
 func (m *mockPinger) PingContext(_ context.Context) error {
 	return m.err
+}
+
+func (o *recordingAuditObserver) Update(_ context.Context, event audit.Event) error {
+	o.events = append(o.events, event)
+	return nil
 }
 
 func setupRouter() http.Handler {
@@ -75,6 +85,22 @@ func setupRouterWithPinger(pinger Pinger) http.Handler {
 
 	r := chi.NewRouter()
 	r.Get("/ping", h.Ping)
+
+	return r
+}
+
+func setupRouterWithAudit(observer audit.Observer) http.Handler {
+	store := storage.NewMemStorage()
+	publisher := audit.NewPublisher(observer)
+	h := NewHandlerWithAudit(service.NewMetrics(store), nil, publisher)
+
+	r := chi.NewRouter()
+	r.Use(middleware.Gzip)
+	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
+	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/update/", h.UpdateMetricJSON)
+	r.Post("/updates", h.UpdateMetricsJSON)
+	r.Post("/updates/", h.UpdateMetricsJSON)
 
 	return r
 }
@@ -534,6 +560,60 @@ func TestUpdateMetricsJSONWithGzipBody(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+}
+
+func TestUpdateMetricsJSONPublishesAuditEvent(t *testing.T) {
+	observer := &recordingAuditObserver{}
+	router := setupRouterWithAudit(observer)
+
+	gaugeValue := 8.8
+	counterDelta := int64(3)
+	requestMetrics := []models.Metrics{
+		{
+			ID:    "auditGauge",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+		{
+			ID:    "auditCounter",
+			MType: models.Counter,
+			Delta: &counterDelta,
+		},
+	}
+
+	body, err := gojson.Marshal(requestMetrics)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/updates", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.168.0.42:12345"
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	if len(observer.events) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(observer.events))
+	}
+
+	event := observer.events[0]
+	if event.IPAddress != "192.168.0.42" {
+		t.Fatalf("expected IP %q, got %q", "192.168.0.42", event.IPAddress)
+	}
+	if len(event.Metrics) != 2 {
+		t.Fatalf("expected 2 metrics in audit event, got %d", len(event.Metrics))
+	}
+	if event.Metrics[0] != "auditGauge" || event.Metrics[1] != "auditCounter" {
+		t.Fatalf("unexpected metric names in audit event: %#v", event.Metrics)
+	}
+	if event.TS == 0 {
+		t.Fatal("expected non-zero audit timestamp")
 	}
 }
 

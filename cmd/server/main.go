@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AGubenskiy/metrics/internal/audit"
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
@@ -42,6 +43,8 @@ func main() {
 	restore := flag.Bool("r", defaultRestore, "restore metrics from file at startup")
 	databaseDSN := flag.String("d", defaultDatabaseDSN, "database connection DSN")
 	key := flag.String("k", "", "hash key")
+	auditFile := flag.String("audit-file", "", "path to audit log file")
+	auditURL := flag.String("audit-url", "", "audit receiver URL")
 	flag.Parse()
 
 	setFlags := map[string]bool{}
@@ -68,6 +71,8 @@ func main() {
 
 	finalDatabaseDSN := resolveStringSetting("DATABASE_DSN", setFlags["d"], *databaseDSN, defaultDatabaseDSN)
 	finalKey := resolveStringSetting("KEY", setFlags["k"], *key, "")
+	finalAuditFile := resolveStringSetting("AUDIT_FILE", setFlags["audit-file"], *auditFile, "")
+	finalAuditURL := resolveStringSetting("AUDIT_URL", setFlags["audit-url"], *auditURL, "")
 	fileStorageConfigured := isNonEmptyEnv("FILE_STORAGE_PATH") ||
 		isNonEmptyEnv("STORE_INTERVAL") ||
 		isNonEmptyEnv("RESTORE") ||
@@ -127,7 +132,12 @@ func main() {
 	defer stopAndFlush()
 
 	metricsService := service.NewMetrics(store)
-	h := handler.NewHandlerWithPinger(metricsService, pinger)
+	auditPublisher, err := buildAuditPublisher(finalAuditFile, finalAuditURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	h := handler.NewHandlerWithAudit(metricsService, pinger, auditPublisher)
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatalf("cannot initialize logger: %v", err)
@@ -154,13 +164,15 @@ func main() {
 	r.Get("/ping", h.Ping)
 
 	log.Printf(
-		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t)\n",
+		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t, audit_file=%t, audit_url=%t)\n",
 		finalAddr,
 		storageMode,
 		finalStoreInterval,
 		finalFileStoragePath,
 		finalRestore,
 		finalDatabaseDSN != "",
+		finalAuditFile != "",
+		finalAuditURL != "",
 	)
 
 	server := &http.Server{
@@ -296,4 +308,22 @@ func getNonEmptyEnv(envName string) (string, bool) {
 		return "", false
 	}
 	return trimmed, true
+}
+
+func buildAuditPublisher(auditFilePath, auditURL string) (*audit.Publisher, error) {
+	publisher := audit.NewPublisher()
+
+	if auditFilePath != "" {
+		publisher.Register(audit.NewFileObserver(auditFilePath))
+	}
+
+	if auditURL != "" {
+		observer, err := audit.NewHTTPObserver(auditURL, &http.Client{Timeout: 3 * time.Second})
+		if err != nil {
+			return nil, err
+		}
+		publisher.Register(observer)
+	}
+
+	return publisher, nil
 }
