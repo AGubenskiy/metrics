@@ -10,6 +10,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
+// ApplyMigrations applies embedded SQL migrations to the configured PostgreSQL database.
 func ApplyMigrations(databaseDSN string) error {
 	sourceDriver, err := iofs.New(migrationsfs.FS, ".")
 	if err != nil {

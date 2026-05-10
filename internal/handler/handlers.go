@@ -26,6 +26,7 @@ var (
 	errUnsupportedMetricType = errors.New("unsupported metric type")
 )
 
+// Handler serves HTTP requests for metrics operations.
 type Handler struct {
 	service        MetricsService
 	pinger         Pinger
@@ -96,14 +97,17 @@ var metricsPageTmpl = template.Must(template.New("metrics-page").Parse(`
 </html>
 `))
 
+// NewHandler creates a Handler without optional ping and audit dependencies.
 func NewHandler(s MetricsService) *Handler {
 	return newHandler(s, nil, nil)
 }
 
+// NewHandlerWithPinger creates a Handler with a database health checker.
 func NewHandlerWithPinger(s MetricsService, pinger Pinger) *Handler {
 	return newHandler(s, pinger, nil)
 }
 
+// NewHandlerWithAudit creates a Handler with both ping and audit integrations enabled.
 func NewHandlerWithAudit(s MetricsService, pinger Pinger, publisher AuditPublisher) *Handler {
 	return newHandler(s, pinger, publisher)
 }
@@ -120,6 +124,7 @@ func newHandler(s MetricsService, pinger Pinger, publisher AuditPublisher) *Hand
 	}
 }
 
+// UpdateMetric handles POST /update/{type}/{name}/{value}.
 func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
@@ -166,6 +171,7 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// UpdateMetricJSON handles POST /update with a single metric in JSON form.
 func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		_ = r.Body.Close()
@@ -215,6 +221,7 @@ func (h *Handler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// UpdateMetricsJSON handles POST /updates with a batch of metrics in JSON form.
 func (h *Handler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		_ = r.Body.Close()
@@ -248,7 +255,7 @@ func (h *Handler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// Инкремент 3
+// GetMetricValue handles GET /value/{type}/{name}.
 func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
@@ -281,6 +288,7 @@ func (h *Handler) GetMetricValue(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetMetricValueJSON handles POST /value with a metric lookup request in JSON form.
 func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		_ = r.Body.Close()
@@ -326,6 +334,7 @@ func (h *Handler) GetMetricValueJSON(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Ping handles GET /ping and checks the configured database connection.
 func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	if h.pinger == nil {
 		http.Error(w, "database connection is not configured", http.StatusInternalServerError)
@@ -343,6 +352,7 @@ func (h *Handler) Ping(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// GetAllMetrics handles GET / and renders all metrics as an HTML page.
 func (h *Handler) GetAllMetrics(w http.ResponseWriter, r *http.Request) {
 	gauges, counters := h.service.GetAll(r.Context())
 

@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Agent collects runtime and system metrics and reports them to the metrics server.
 type Agent struct {
 	serverAddr     string
 	pollInterval   time.Duration
@@ -47,10 +48,12 @@ type Agent struct {
 	batchDisabled atomic.Bool
 }
 
+// NewAgent creates an agent with single-request reporting mode.
 func NewAgent(serverAddr string, reportInterval int, pollInterval int, key string) *Agent {
 	return NewAgentWithRateLimit(serverAddr, reportInterval, pollInterval, 1, key)
 }
 
+// NewAgentWithRateLimit creates an agent with a bounded number of concurrent outgoing requests.
 func NewAgentWithRateLimit(serverAddr string, reportInterval int, pollInterval int, rateLimit int, key string) *Agent {
 	if rateLimit <= 0 {
 		rateLimit = 1
@@ -80,6 +83,7 @@ func NewAgentWithRateLimit(serverAddr string, reportInterval int, pollInterval i
 	}
 }
 
+// SetLogger overrides the logger used by the agent.
 func (a *Agent) SetLogger(logger *zap.Logger) {
 	if logger == nil {
 		return
@@ -87,6 +91,7 @@ func (a *Agent) SetLogger(logger *zap.Logger) {
 	a.logger = logger
 }
 
+// Run starts metric collection and reporting loops and blocks until ctx is cancelled.
 func (a *Agent) Run(ctx context.Context) {
 	jobs := make(chan sendJob, a.rateLimit*2)
 

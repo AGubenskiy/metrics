@@ -81,6 +81,7 @@ func (g *gzipReadCloser) Close() error {
 	return errors.Join(g.reader.Close(), g.body.Close())
 }
 
+// Gzip transparently decompresses gzipped request bodies and compresses supported responses.
 func Gzip(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hasGzipToken(r.Header.Get("Content-Encoding")) {

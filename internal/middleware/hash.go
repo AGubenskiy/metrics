@@ -56,6 +56,7 @@ func (w *hashResponseWriter) Flush() error {
 	return err
 }
 
+// Hash validates request body signatures and signs non-empty responses.
 func Hash(key string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if key == "" {

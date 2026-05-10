@@ -9,15 +9,18 @@ import (
 	gojson "github.com/goccy/go-json"
 )
 
+// FileObserver appends audit events to a file as JSON lines.
 type FileObserver struct {
 	path string
 	mu   sync.Mutex
 }
 
+// NewFileObserver creates a file-backed audit observer.
 func NewFileObserver(path string) *FileObserver {
 	return &FileObserver{path: path}
 }
 
+// Update serializes event and appends it to the configured file.
 func (o *FileObserver) Update(_ context.Context, event Event) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()

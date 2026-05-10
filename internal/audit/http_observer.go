@@ -12,11 +12,13 @@ import (
 	gojson "github.com/goccy/go-json"
 )
 
+// HTTPObserver delivers audit events to a remote HTTP endpoint with POST requests.
 type HTTPObserver struct {
 	client *http.Client
 	url    string
 }
 
+// NewHTTPObserver creates an HTTP-based audit observer for targetURL.
 func NewHTTPObserver(targetURL string, client *http.Client) (*HTTPObserver, error) {
 	parsedURL, err := url.ParseRequestURI(targetURL)
 	if err != nil {
@@ -33,6 +35,7 @@ func NewHTTPObserver(targetURL string, client *http.Client) (*HTTPObserver, erro
 	}, nil
 }
 
+// Update sends event as a JSON payload to the configured HTTP endpoint.
 func (o *HTTPObserver) Update(ctx context.Context, event Event) error {
 	payload, err := gojson.Marshal(event)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	gojson "github.com/goccy/go-json"
 )
 
+// MemStorage stores metrics in memory and optionally persists snapshots to disk.
 type MemStorage struct {
 	mu       sync.RWMutex
 	gauges   map[string]float64
@@ -19,6 +20,7 @@ type MemStorage struct {
 	onUpdate func() error
 }
 
+// NewMemStorage creates an empty in-memory metrics storage.
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(map[string]float64),
@@ -26,6 +28,7 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
+// UpdateGauge replaces the current value of a gauge metric.
 func (m *MemStorage) UpdateGauge(_ context.Context, name string, value float64) error {
 	m.mu.Lock()
 	m.gauges[name] = value
@@ -38,6 +41,7 @@ func (m *MemStorage) UpdateGauge(_ context.Context, name string, value float64) 
 	return nil
 }
 
+// UpdateCounter adds value to the current counter metric.
 func (m *MemStorage) UpdateCounter(_ context.Context, name string, value int64) error {
 	m.mu.Lock()
 	m.counters[name] += value
@@ -50,6 +54,7 @@ func (m *MemStorage) UpdateCounter(_ context.Context, name string, value int64) 
 	return nil
 }
 
+// UpdateMetrics validates and applies a batch of metrics atomically under the storage lock.
 func (m *MemStorage) UpdateMetrics(_ context.Context, metrics []models.Metrics) error {
 	if len(metrics) == 0 {
 		return nil
@@ -79,19 +84,23 @@ func (m *MemStorage) UpdateMetrics(_ context.Context, metrics []models.Metrics) 
 	return nil
 }
 
-// Инкремент 3
+// GetGauge returns the current value of a gauge metric.
 func (m *MemStorage) GetGauge(_ context.Context, name string) (float64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	value, ok := m.gauges[name]
 	return value, ok
 }
+
+// GetCounter returns the current value of a counter metric.
 func (m *MemStorage) GetCounter(_ context.Context, name string) (int64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	value, ok := m.counters[name]
 	return value, ok
 }
+
+// GetAll returns defensive copies of all stored metrics.
 func (m *MemStorage) GetAll(_ context.Context) (map[string]float64, map[string]int64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -109,12 +118,14 @@ func (m *MemStorage) GetAll(_ context.Context) (map[string]float64, map[string]i
 	return gaugesOut, countersOut
 }
 
+// SetSyncSaveOnUpdate configures a callback that is executed after each successful update.
 func (m *MemStorage) SetSyncSaveOnUpdate(callback func() error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onUpdate = callback
 }
 
+// SaveToFile writes a full metrics snapshot to path.
 func (m *MemStorage) SaveToFile(path string) error {
 	metrics := m.snapshot()
 
@@ -160,6 +171,7 @@ func (m *MemStorage) SaveToFile(path string) error {
 	return nil
 }
 
+// LoadFromFile restores metrics from a previously saved snapshot file.
 func (m *MemStorage) LoadFromFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -24,12 +24,14 @@ const (
 	 DO UPDATE SET counter_value = metrics.counter_value + EXCLUDED.counter_value, updated_at = NOW()`
 )
 
+// PostgresStorage persists metrics in PostgreSQL.
 type PostgresStorage struct {
 	db          *sql.DB
 	retryDelays []time.Duration
 	sleep       func(time.Duration)
 }
 
+// NewPostgresStorage creates a PostgreSQL-backed metrics storage.
 func NewPostgresStorage(db *sql.DB) *PostgresStorage {
 	return &PostgresStorage{
 		db:          db,
@@ -38,6 +40,7 @@ func NewPostgresStorage(db *sql.DB) *PostgresStorage {
 	}
 }
 
+// UpdateGauge stores a gauge metric in PostgreSQL.
 func (s *PostgresStorage) UpdateGauge(ctx context.Context, name string, value float64) error {
 	return s.retry(func() error {
 		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
@@ -47,6 +50,7 @@ func (s *PostgresStorage) UpdateGauge(ctx context.Context, name string, value fl
 	})
 }
 
+// UpdateCounter increments a counter metric in PostgreSQL.
 func (s *PostgresStorage) UpdateCounter(ctx context.Context, name string, value int64) error {
 	return s.retry(func() error {
 		ctx, cancel := context.WithTimeout(ctx, queryTimeout)
@@ -56,6 +60,7 @@ func (s *PostgresStorage) UpdateCounter(ctx context.Context, name string, value 
 	})
 }
 
+// UpdateMetrics stores a batch of metrics in a single SQL transaction.
 func (s *PostgresStorage) UpdateMetrics(ctx context.Context, metrics []models.Metrics) (err error) {
 	if len(metrics) == 0 {
 		return nil
@@ -99,6 +104,7 @@ func (s *PostgresStorage) UpdateMetrics(ctx context.Context, metrics []models.Me
 	return err
 }
 
+// GetGauge reads a gauge metric by name.
 func (s *PostgresStorage) GetGauge(ctx context.Context, name string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
@@ -117,6 +123,7 @@ func (s *PostgresStorage) GetGauge(ctx context.Context, name string) (float64, b
 	return value, true
 }
 
+// GetCounter reads a counter metric by name.
 func (s *PostgresStorage) GetCounter(ctx context.Context, name string) (int64, bool) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
@@ -135,6 +142,7 @@ func (s *PostgresStorage) GetCounter(ctx context.Context, name string) (int64, b
 	return value, true
 }
 
+// GetAll returns all stored metrics split into gauges and counters.
 func (s *PostgresStorage) GetAll(ctx context.Context) (map[string]float64, map[string]int64) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
