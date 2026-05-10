@@ -207,37 +207,38 @@ func (m *MemStorage) snapshot() []models.Metrics {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	gaugeNames := make([]string, 0, len(m.gauges))
-	for name := range m.gauges {
-		gaugeNames = append(gaugeNames, name)
-	}
-	sort.Strings(gaugeNames)
+	metrics := make([]models.Metrics, 0, len(m.gauges)+len(m.counters))
+	gaugeValues := make([]float64, len(m.gauges))
+	gaugeIndex := 0
 
-	counterNames := make([]string, 0, len(m.counters))
-	for name := range m.counters {
-		counterNames = append(counterNames, name)
-	}
-	sort.Strings(counterNames)
-
-	metrics := make([]models.Metrics, 0, len(gaugeNames)+len(counterNames))
-
-	for _, name := range gaugeNames {
-		value := m.gauges[name]
+	for name, value := range m.gauges {
+		gaugeValues[gaugeIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
-			Value: &value,
+			Value: &gaugeValues[gaugeIndex],
 		})
+		gaugeIndex++
 	}
 
-	for _, name := range counterNames {
-		delta := m.counters[name]
+	counterValues := make([]int64, len(m.counters))
+	counterIndex := 0
+	for name, delta := range m.counters {
+		counterValues[counterIndex] = delta
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Counter,
-			Delta: &delta,
+			Delta: &counterValues[counterIndex],
 		})
+		counterIndex++
 	}
+
+	sort.Slice(metrics, func(i, j int) bool {
+		if metrics[i].MType != metrics[j].MType {
+			return metrics[i].MType == models.Gauge
+		}
+		return metrics[i].ID < metrics[j].ID
+	})
 
 	return metrics
 }

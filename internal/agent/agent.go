@@ -193,23 +193,29 @@ func (a *Agent) collectMetricsBatch() []models.Metrics {
 	defer a.mu.RUnlock()
 
 	metrics := make([]models.Metrics, 0, len(a.gauges)+len(a.counters))
+	gaugeValues := make([]float64, len(a.gauges))
+	gaugeIndex := 0
 
 	for name, value := range a.gauges {
-		gaugeValue := value
+		gaugeValues[gaugeIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
-			Value: &gaugeValue,
+			Value: &gaugeValues[gaugeIndex],
 		})
+		gaugeIndex++
 	}
 
+	counterValues := make([]int64, len(a.counters))
+	counterIndex := 0
 	for name, value := range a.counters {
-		counterDelta := value
+		counterValues[counterIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Counter,
-			Delta: &counterDelta,
+			Delta: &counterValues[counterIndex],
 		})
+		counterIndex++
 	}
 
 	return metrics
