@@ -132,10 +132,18 @@ func main() {
 	defer stopAndFlush()
 
 	metricsService := service.NewMetrics(store)
-	auditPublisher, err := buildAuditPublisher(finalAuditFile, finalAuditURL)
+	auditPublisher, stopAudit, err := buildAuditPublisher(finalAuditFile, finalAuditURL)
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if closeErr := stopAudit(shutdownCtx); closeErr != nil {
+			log.Printf("cannot stop audit publisher: %v", closeErr)
+		}
+	}()
 
 	h := handler.NewHandlerWithAudit(metricsService, pinger, auditPublisher)
 	logger, err := zap.NewProduction()
@@ -310,20 +318,33 @@ func getNonEmptyEnv(envName string) (string, bool) {
 	return trimmed, true
 }
 
-func buildAuditPublisher(auditFilePath, auditURL string) (*audit.Publisher, error) {
+func buildAuditPublisher(auditFilePath, auditURL string) (handler.AuditPublisher, func(context.Context) error, error) {
 	publisher := audit.NewPublisher()
+	configured := false
 
 	if auditFilePath != "" {
 		publisher.Register(audit.NewFileObserver(auditFilePath))
+		configured = true
 	}
 
 	if auditURL != "" {
 		observer, err := audit.NewHTTPObserver(auditURL, &http.Client{Timeout: 3 * time.Second})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		publisher.Register(observer)
+		configured = true
 	}
 
-	return publisher, nil
+	if !configured {
+		return publisher, func(context.Context) error { return nil }, nil
+	}
+
+	asyncPublisher := audit.NewAsyncPublisher(publisher, audit.AsyncPublisherConfig{
+		QueueSize:       256,
+		Workers:         2,
+		DeliveryTimeout: 3 * time.Second,
+	})
+
+	return asyncPublisher, asyncPublisher.Close, nil
 }

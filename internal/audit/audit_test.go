@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	gojson "github.com/goccy/go-json"
 )
@@ -19,9 +21,23 @@ type stubObserver struct {
 	events []Event
 }
 
+type blockingObserver struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 func (o *stubObserver) Update(_ context.Context, event Event) error {
 	o.events = append(o.events, event)
 	return o.err
+}
+
+func (o *blockingObserver) Update(_ context.Context, _ Event) error {
+	o.once.Do(func() {
+		close(o.started)
+	})
+	<-o.release
+	return nil
 }
 
 func TestPublisherNotifyToAllObservers(t *testing.T) {
@@ -73,6 +89,81 @@ func TestPublisherNotifyJoinsErrors(t *testing.T) {
 	}
 	if !errors.Is(err, secondErr) {
 		t.Fatalf("expected second error to be joined, got %v", err)
+	}
+}
+
+func TestAsyncPublisherNotifyDoesNotWaitForObserver(t *testing.T) {
+	t.Parallel()
+
+	observer := &blockingObserver{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	publisher := NewAsyncPublisher(NewPublisher(observer), AsyncPublisherConfig{
+		QueueSize:       1,
+		Workers:         1,
+		DeliveryTimeout: time.Second,
+	})
+	defer func() {
+		close(observer.release)
+
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := publisher.Close(closeCtx); err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	}()
+
+	notifyDone := make(chan error, 1)
+	go func() {
+		notifyDone <- publisher.Notify(context.Background(), Event{TS: 1})
+	}()
+
+	select {
+	case err := <-notifyDone:
+		if err != nil {
+			t.Fatalf("Notify returned error: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Notify blocked on slow observer")
+	}
+
+	select {
+	case <-observer.started:
+	case <-time.After(time.Second):
+		t.Fatal("observer was not invoked")
+	}
+}
+
+func TestAsyncPublisherCloseFlushesQueuedEvents(t *testing.T) {
+	t.Parallel()
+
+	observer := &stubObserver{}
+	publisher := NewAsyncPublisher(NewPublisher(observer), AsyncPublisherConfig{
+		QueueSize:       8,
+		Workers:         1,
+		DeliveryTimeout: time.Second,
+	})
+
+	events := []Event{
+		{TS: 1, Metrics: []string{"Alloc"}},
+		{TS: 2, Metrics: []string{"HeapAlloc"}},
+		{TS: 3, Metrics: []string{"PollCount"}},
+	}
+	for _, event := range events {
+		if err := publisher.Notify(context.Background(), event); err != nil {
+			t.Fatalf("Notify returned error: %v", err)
+		}
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := publisher.Close(closeCtx); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	if !reflect.DeepEqual(observer.events, events) {
+		t.Fatalf("unexpected delivered events: %+v", observer.events)
 	}
 }
 
