@@ -16,10 +16,9 @@ func BenchmarkAgentCollectMetricsBatch(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
 	total := 0
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		total += len(agent.collectMetricsBatch())
 	}
 

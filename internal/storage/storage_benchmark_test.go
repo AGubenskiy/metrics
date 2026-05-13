@@ -16,9 +16,8 @@ func BenchmarkMemStorageUpdateMetrics(b *testing.B) {
 	ctx := context.Background()
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := store.UpdateMetrics(ctx, metrics); err != nil {
 			b.Fatalf("UpdateMetrics failed: %v", err)
 		}
@@ -29,10 +28,9 @@ func BenchmarkMemStorageSnapshotLarge(b *testing.B) {
 	store := makeBenchmarkStorage(4096, 512)
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
 	total := 0
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		total += len(store.snapshot())
 	}
 
@@ -46,9 +44,8 @@ func BenchmarkMemStorageSaveToFileLarge(b *testing.B) {
 	path := filepath.Join(b.TempDir(), "metrics.json")
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if err := store.SaveToFile(path); err != nil {
 			b.Fatalf("SaveToFile failed: %v", err)
 		}

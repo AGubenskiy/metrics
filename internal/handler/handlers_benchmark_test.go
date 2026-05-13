@@ -18,9 +18,8 @@ func BenchmarkHandlerUpdateMetricsJSON(b *testing.B) {
 	payload := mustMarshalMetrics(b, benchmarkBatchMetrics(256, 32))
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		req := httptest.NewRequest(http.MethodPost, "/updates", bytes.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
 		req.RemoteAddr = "192.168.0.42:54321"
