@@ -328,7 +328,10 @@ func buildAuditPublisher(auditFilePath, auditURL string) (handler.AuditPublisher
 	}
 
 	if auditURL != "" {
-		observer, err := audit.NewHTTPObserver(auditURL, &http.Client{Timeout: 3 * time.Second})
+		observer, err := audit.NewHTTPObserver(
+			auditURL,
+			audit.NewRetryHTTPClient(&http.Client{Timeout: 3 * time.Second}),
+		)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -340,11 +343,13 @@ func buildAuditPublisher(auditFilePath, auditURL string) (handler.AuditPublisher
 		return publisher, func(context.Context) error { return nil }, nil
 	}
 
-	asyncPublisher := audit.NewAsyncPublisher(publisher, audit.AsyncPublisherConfig{
+	asyncPublisher, err := audit.NewAsyncPublisher(publisher, audit.AsyncPublisherConfig{
 		QueueSize:       256,
-		Workers:         2,
 		DeliveryTimeout: 3 * time.Second,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
 
 	return asyncPublisher, asyncPublisher.Close, nil
 }

@@ -22,9 +22,6 @@ func NewFileObserver(path string) *FileObserver {
 
 // Update serializes event and appends it to the configured file.
 func (o *FileObserver) Update(_ context.Context, event Event) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
 	payload, err := gojson.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal audit event: %w", err)
@@ -39,6 +36,10 @@ func (o *FileObserver) Update(_ context.Context, event Event) error {
 	}()
 
 	payload = append(payload, '\n')
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
 	if _, err := file.Write(payload); err != nil {
 		return fmt.Errorf("write audit file %q: %w", o.path, err)
 	}

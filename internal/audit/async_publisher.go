@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -11,21 +12,30 @@ import (
 var (
 	// ErrPublisherClosed is returned when an audit event is published after shutdown started.
 	ErrPublisherClosed = errors.New("audit publisher is closed")
-	// ErrQueueFull is returned when the async audit queue is full.
+	// ErrQueueFull is returned when at least one async observer queue is full.
 	ErrQueueFull = errors.New("audit queue is full")
+	// ErrNilPublisher is returned when async publisher is created without a base publisher.
+	ErrNilPublisher = errors.New("audit publisher is nil")
+	// ErrInvalidQueueSize is returned when async publisher queue size is not positive.
+	ErrInvalidQueueSize = errors.New("audit queue size must be positive")
+	// ErrInvalidDeliveryTimeout is returned when async publisher delivery timeout is not positive.
+	ErrInvalidDeliveryTimeout = errors.New("audit delivery timeout must be positive")
 )
 
 // AsyncPublisherConfig controls async audit delivery.
 type AsyncPublisherConfig struct {
 	QueueSize       int
-	Workers         int
 	DeliveryTimeout time.Duration
+}
+
+type observerQueue struct {
+	observer Observer
+	queue    chan Event
 }
 
 // AsyncPublisher decouples HTTP request handling from slow audit observers.
 type AsyncPublisher struct {
-	publisher       *Publisher
-	queue           chan Event
+	observers       []observerQueue
 	deliveryTimeout time.Duration
 
 	mu      sync.RWMutex
@@ -35,36 +45,41 @@ type AsyncPublisher struct {
 }
 
 // NewAsyncPublisher wraps publisher with a bounded async delivery queue.
-func NewAsyncPublisher(publisher *Publisher, cfg AsyncPublisherConfig) *AsyncPublisher {
+func NewAsyncPublisher(publisher *Publisher, cfg AsyncPublisherConfig) (*AsyncPublisher, error) {
 	if publisher == nil {
-		publisher = NewPublisher()
+		return nil, ErrNilPublisher
 	}
 	if cfg.QueueSize <= 0 {
-		cfg.QueueSize = 256
-	}
-	if cfg.Workers <= 0 {
-		cfg.Workers = 1
+		return nil, ErrInvalidQueueSize
 	}
 	if cfg.DeliveryTimeout <= 0 {
-		cfg.DeliveryTimeout = 3 * time.Second
+		return nil, ErrInvalidDeliveryTimeout
 	}
 
+	publisher.mu.RLock()
+	observers := append([]Observer(nil), publisher.observers...)
+	publisher.mu.RUnlock()
+
 	p := &AsyncPublisher{
-		publisher:       publisher,
-		queue:           make(chan Event, cfg.QueueSize),
+		observers:       make([]observerQueue, 0, len(observers)),
 		deliveryTimeout: cfg.DeliveryTimeout,
 		closeCh:         make(chan struct{}),
 	}
 
-	p.wg.Add(cfg.Workers)
-	for i := 0; i < cfg.Workers; i++ {
-		go p.runWorker()
+	for _, observer := range observers {
+		observerQueue := observerQueue{
+			observer: observer,
+			queue:    make(chan Event, cfg.QueueSize),
+		}
+		p.observers = append(p.observers, observerQueue)
+		p.wg.Add(1)
+		go p.runWorker(observerQueue.observer, observerQueue.queue)
 	}
 
-	return p
+	return p, nil
 }
 
-// Notify enqueues an audit event for background delivery.
+// Notify enqueues an audit event for background delivery to every configured observer.
 func (p *AsyncPublisher) Notify(ctx context.Context, event Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -77,12 +92,16 @@ func (p *AsyncPublisher) Notify(ctx context.Context, event Event) error {
 		return ErrPublisherClosed
 	}
 
-	select {
-	case p.queue <- event:
-		return nil
-	default:
-		return ErrQueueFull
+	var errs []error
+	for _, observerQueue := range p.observers {
+		select {
+		case observerQueue.queue <- event:
+		default:
+			errs = append(errs, fmt.Errorf("%w: observer %T", ErrQueueFull, observerQueue.observer))
+		}
 	}
+
+	return errors.Join(errs...)
 }
 
 // Close stops accepting new events and waits until queued deliveries finish.
@@ -90,7 +109,9 @@ func (p *AsyncPublisher) Close(ctx context.Context) error {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
-		close(p.queue)
+		for _, observerQueue := range p.observers {
+			close(observerQueue.queue)
+		}
 		go func() {
 			p.wg.Wait()
 			close(p.closeCh)
@@ -106,13 +127,13 @@ func (p *AsyncPublisher) Close(ctx context.Context) error {
 	}
 }
 
-func (p *AsyncPublisher) runWorker() {
+func (p *AsyncPublisher) runWorker(observer Observer, queue <-chan Event) {
 	defer p.wg.Done()
 
-	for event := range p.queue {
+	for event := range queue {
 		ctx, cancel := context.WithTimeout(context.Background(), p.deliveryTimeout)
-		if err := p.publisher.Notify(ctx, event); err != nil {
-			log.Printf("cannot deliver audit event: %v", err)
+		if err := observer.Update(ctx, event); err != nil {
+			log.Printf("cannot deliver audit event to %T: %v", observer, err)
 		}
 		cancel()
 	}
