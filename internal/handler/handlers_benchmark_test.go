@@ -20,12 +20,17 @@ func BenchmarkHandlerUpdateMetricsJSON(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
+		b.StopTimer()
+
 		req := httptest.NewRequest(http.MethodPost, "/updates", bytes.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
 		req.RemoteAddr = "192.168.0.42:54321"
 
 		rr := httptest.NewRecorder()
+
+		b.StartTimer()
 		handler.UpdateMetricsJSON(rr, req)
+		b.StopTimer()
 
 		if rr.Code != http.StatusOK {
 			b.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
