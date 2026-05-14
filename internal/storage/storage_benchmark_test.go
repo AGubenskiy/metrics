@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -49,23 +48,6 @@ func BenchmarkMemStorageSaveToFileLarge(b *testing.B) {
 		if err := store.SaveToFile(path); err != nil {
 			b.Fatalf("SaveToFile failed: %v", err)
 		}
-	}
-}
-
-func TestProfileMemStorageSnapshotLarge(t *testing.T) {
-	if os.Getenv("PROFILE_MEMSTORAGE_SNAPSHOT") != "1" {
-		t.Skip("profiling helper test")
-	}
-
-	store := makeBenchmarkStorage(4096, 512)
-	total := 0
-
-	for i := 0; i < 3000; i++ {
-		total += len(store.snapshot())
-	}
-
-	if total == 0 {
-		t.Fatal("unexpected zero snapshot size")
 	}
 }
 

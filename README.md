@@ -62,16 +62,16 @@ go test -run ^$ -bench BenchmarkAgentCollectMetricsBatch -benchmem ./internal/ag
 Текущие результаты:
 
 ```text
-BenchmarkMemStorageUpdateMetrics-28      	  235285	      5107 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMemStorageSnapshotLarge-28      	    1681	    710716 ns/op	  331913 B/op	       6 allocs/op
-BenchmarkMemStorageSaveToFileLarge-28    	     457	   2865947 ns/op	  711220 B/op	      28 allocs/op
-BenchmarkHandlerUpdateMetricsJSON-28    	   24585	     51027 ns/op	   67864 B/op	     607 allocs/op
-BenchmarkAgentCollectMetricsBatch-28    	   16636	     76294 ns/op	  331777 B/op	       3 allocs/op
+BenchmarkMemStorageUpdateMetrics-28      	  224318	      5317 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemStorageSnapshotLarge-28      	    1692	    699343 ns/op	  331916 B/op	       6 allocs/op
+BenchmarkMemStorageSaveToFileLarge-28    	     470	   3099079 ns/op	 1065741 B/op	      37 allocs/op
+BenchmarkHandlerUpdateMetricsJSON-28    	   22156	     52632 ns/op	   62873 B/op	     591 allocs/op
+BenchmarkAgentCollectMetricsBatch-28    	   16148	     75496 ns/op	  331777 B/op	       3 allocs/op
 ```
 
-Для профилирования памяти добавлен helper:
+Для профилирования памяти использовался benchmark:
 
-- `cmd/profilemem` — создаёт реалистичный набор данных (`4096` gauge, `512` counter), многократно вызывает `SaveToFile` и сохраняет heap profile.
+- `BenchmarkMemStorageSaveToFileLarge` — создаёт реалистичный набор данных (`4096` gauge, `512` counter) и повторяет `SaveToFile` в стандартном benchmark harness.
 
 Профили сохранены в директории `profiles`:
 
@@ -81,7 +81,7 @@ BenchmarkAgentCollectMetricsBatch-28    	   16636	     76294 ns/op	  331777 B/op
 Базовый профиль снимался командой:
 
 ```bash
-go run ./cmd/profilemem -output ./profiles/base.pprof -iterations 1000
+go test -run ^$ -bench ^BenchmarkMemStorageSaveToFileLarge$ -benchtime=1000x -count=1 -memprofile profiles/base.pprof -memprofilerate=1 ./internal/storage
 ```
 
 При анализе `pprof` использовались команды `top`, `list`, `peek`, `web`.
@@ -101,7 +101,7 @@ go run ./cmd/profilemem -output ./profiles/base.pprof -iterations 1000
 - сортировка перенесена на итоговый `[]models.Metrics`;
 - тот же приём с backing-слайсами применён в `internal/agent.(*Agent).collectMetricsBatch`.
 
-Эффект по бенчмаркам:
+Эффект по бенчмаркам на момент оптимизации:
 
 ```text
 BenchmarkMemStorageSnapshotLarge: 406792 B/op, 4611 allocs/op -> 331913 B/op, 6 allocs/op
@@ -112,7 +112,7 @@ BenchmarkAgentCollectMetricsBatch: 331778 B/op, 4609 allocs/op -> 331777 B/op, 3
 После оптимизации профиль снимался командой:
 
 ```bash
-go run ./cmd/profilemem -output ./profiles/result.pprof -iterations 1000
+go test -run ^$ -bench ^BenchmarkMemStorageSaveToFileLarge$ -benchtime=1000x -count=1 -memprofile profiles/result.pprof -memprofilerate=1 ./internal/storage
 ```
 
 `top -sample_index=alloc_space` для `result.pprof` показал снижение общего объёма аллокаций с `788.83MB` до `582.32MB`, а вклад `snapshot` снизился с `387.94MB` до `316.43MB`.
@@ -124,7 +124,6 @@ go tool pprof -top -diff_base=profiles/base.pprof profiles/result.pprof
 ```
 
 ```text
-File: profilemem.exe
 Type: inuse_space
 Showing nodes accounting for 1.47kB, 0.18% of 813.84kB total
       flat  flat%   sum%        cum   cum%

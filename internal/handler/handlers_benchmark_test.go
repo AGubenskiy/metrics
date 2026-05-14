@@ -30,7 +30,6 @@ func BenchmarkHandlerUpdateMetricsJSON(b *testing.B) {
 
 		b.StartTimer()
 		handler.UpdateMetricsJSON(rr, req)
-		b.StopTimer()
 
 		if rr.Code != http.StatusOK {
 			b.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
