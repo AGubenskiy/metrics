@@ -9,6 +9,7 @@ require (
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
 	github.com/lib/pq v1.12.0
 	github.com/shirou/gopsutil/v3 v3.22.6
+	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
 )
 

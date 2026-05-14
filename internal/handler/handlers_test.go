@@ -4,7 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
 	"github.com/AGubenskiy/metrics/internal/audit"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	models "github.com/AGubenskiy/metrics/internal/model"
@@ -12,31 +18,10 @@ import (
 	"github.com/AGubenskiy/metrics/internal/signing"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
+	gomock "go.uber.org/mock/gomock"
 
 	"github.com/AGubenskiy/metrics/internal/storage"
 )
-
-type mockPinger struct {
-	err error
-}
-
-type recordingAuditObserver struct {
-	events []audit.Event
-}
-
-func (m *mockPinger) PingContext(_ context.Context) error {
-	return m.err
-}
-
-func (o *recordingAuditObserver) Update(_ context.Context, event audit.Event) error {
-	o.events = append(o.events, event)
-	return nil
-}
 
 func setupRouter() http.Handler {
 	store := storage.NewMemStorage()
@@ -89,9 +74,8 @@ func setupRouterWithPinger(pinger Pinger) http.Handler {
 	return r
 }
 
-func setupRouterWithAudit(observer audit.Observer) http.Handler {
+func setupRouterWithAudit(publisher AuditPublisher) http.Handler {
 	store := storage.NewMemStorage()
-	publisher := audit.NewPublisher(observer)
 	h := NewHandlerWithAudit(service.NewMetrics(store), nil, publisher)
 
 	r := chi.NewRouter()
@@ -564,8 +548,18 @@ func TestUpdateMetricsJSONWithGzipBody(t *testing.T) {
 }
 
 func TestUpdateMetricsJSONPublishesAuditEvent(t *testing.T) {
-	observer := &recordingAuditObserver{}
-	router := setupRouterWithAudit(observer)
+	ctrl := gomock.NewController(t)
+	publisher := NewMockAuditPublisher(ctrl)
+	var gotEvent audit.Event
+
+	publisher.EXPECT().
+		Notify(gomock.Any(), gomock.AssignableToTypeOf(audit.Event{})).
+		DoAndReturn(func(_ context.Context, event audit.Event) error {
+			gotEvent = event
+			return nil
+		})
+
+	router := setupRouterWithAudit(publisher)
 
 	gaugeValue := 8.8
 	counterDelta := int64(3)
@@ -598,21 +592,16 @@ func TestUpdateMetricsJSONPublishesAuditEvent(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
 	}
 
-	if len(observer.events) != 1 {
-		t.Fatalf("expected 1 audit event, got %d", len(observer.events))
+	if gotEvent.IPAddress != "192.168.0.42" {
+		t.Fatalf("expected IP %q, got %q", "192.168.0.42", gotEvent.IPAddress)
 	}
-
-	event := observer.events[0]
-	if event.IPAddress != "192.168.0.42" {
-		t.Fatalf("expected IP %q, got %q", "192.168.0.42", event.IPAddress)
+	if len(gotEvent.Metrics) != 2 {
+		t.Fatalf("expected 2 metrics in audit event, got %d", len(gotEvent.Metrics))
 	}
-	if len(event.Metrics) != 2 {
-		t.Fatalf("expected 2 metrics in audit event, got %d", len(event.Metrics))
+	if gotEvent.Metrics[0] != "auditGauge" || gotEvent.Metrics[1] != "auditCounter" {
+		t.Fatalf("unexpected metric names in audit event: %#v", gotEvent.Metrics)
 	}
-	if event.Metrics[0] != "auditGauge" || event.Metrics[1] != "auditCounter" {
-		t.Fatalf("unexpected metric names in audit event: %#v", event.Metrics)
-	}
-	if event.TS == 0 {
+	if gotEvent.TS == 0 {
 		t.Fatal("expected non-zero audit timestamp")
 	}
 }
@@ -658,30 +647,46 @@ func TestNoGzipForUnsupportedContentType(t *testing.T) {
 
 func TestPing(t *testing.T) {
 	tests := []struct {
-		name       string
-		pinger     Pinger
-		wantStatus int
+		name        string
+		setupPinger func(*testing.T) Pinger
+		wantStatus  int
 	}{
 		{
-			name:       "db not configured",
-			pinger:     nil,
+			name: "db not configured",
+			setupPinger: func(*testing.T) Pinger {
+				return nil
+			},
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
-			name:       "ping ok",
-			pinger:     &mockPinger{},
+			name: "ping ok",
+			setupPinger: func(t *testing.T) Pinger {
+				t.Helper()
+
+				ctrl := gomock.NewController(t)
+				pinger := NewMockPinger(ctrl)
+				pinger.EXPECT().PingContext(gomock.Any()).Return(nil)
+				return pinger
+			},
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:       "ping fails",
-			pinger:     &mockPinger{err: errors.New("db unavailable")},
+			name: "ping fails",
+			setupPinger: func(t *testing.T) Pinger {
+				t.Helper()
+
+				ctrl := gomock.NewController(t)
+				pinger := NewMockPinger(ctrl)
+				pinger.EXPECT().PingContext(gomock.Any()).Return(fmt.Errorf("db unavailable"))
+				return pinger
+			},
 			wantStatus: http.StatusInternalServerError,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := setupRouterWithPinger(tt.pinger)
+			router := setupRouterWithPinger(tt.setupPinger(t))
 			req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 			rr := httptest.NewRecorder()
 
