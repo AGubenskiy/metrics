@@ -3,16 +3,27 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/AGubenskiy/metrics/internal/agent"
 	"log"
 	"os"
 	"os/signal"
 	"strconv"
 
+	"github.com/AGubenskiy/metrics/internal/agent"
+	"github.com/AGubenskiy/metrics/internal/buildinfo"
 	"go.uber.org/zap"
 )
 
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
+)
+
 func main() {
+	if err := buildinfo.Print(os.Stdout, buildVersion, buildDate, buildCommit); err != nil {
+		log.Printf("cannot print build info: %v", err)
+	}
+
 	const (
 		defaultAddr           = "localhost:8080"
 		defaultReportInterval = 10
