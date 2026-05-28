@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +12,7 @@ import (
 	gojson "github.com/goccy/go-json"
 )
 
+// MemStorage stores metrics in memory and optionally persists snapshots to disk.
 type MemStorage struct {
 	mu       sync.RWMutex
 	gauges   map[string]float64
@@ -17,6 +20,7 @@ type MemStorage struct {
 	onUpdate func() error
 }
 
+// NewMemStorage creates an empty in-memory metrics storage.
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(map[string]float64),
@@ -24,7 +28,8 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
-func (m *MemStorage) UpdateGauge(name string, value float64) error {
+// UpdateGauge replaces the current value of a gauge metric.
+func (m *MemStorage) UpdateGauge(_ context.Context, name string, value float64) error {
 	m.mu.Lock()
 	m.gauges[name] = value
 	onUpdate := m.onUpdate
@@ -36,7 +41,8 @@ func (m *MemStorage) UpdateGauge(name string, value float64) error {
 	return nil
 }
 
-func (m *MemStorage) UpdateCounter(name string, value int64) error {
+// UpdateCounter adds value to the current counter metric.
+func (m *MemStorage) UpdateCounter(_ context.Context, name string, value int64) error {
 	m.mu.Lock()
 	m.counters[name] += value
 	onUpdate := m.onUpdate
@@ -48,20 +54,54 @@ func (m *MemStorage) UpdateCounter(name string, value int64) error {
 	return nil
 }
 
-// Инкремент 3
-func (m *MemStorage) GetGauge(name string) (float64, bool) {
+// UpdateMetrics validates and applies a batch of metrics atomically under the storage lock.
+func (m *MemStorage) UpdateMetrics(_ context.Context, metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	for _, metric := range metrics {
+		if err := validateMetric(metric); err != nil {
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	for _, metric := range metrics {
+		switch metric.MType {
+		case models.Gauge:
+			m.gauges[metric.ID] = *metric.Value
+		case models.Counter:
+			m.counters[metric.ID] += *metric.Delta
+		}
+	}
+	onUpdate := m.onUpdate
+	m.mu.Unlock()
+
+	if onUpdate != nil {
+		return onUpdate()
+	}
+	return nil
+}
+
+// GetGauge returns the current value of a gauge metric.
+func (m *MemStorage) GetGauge(_ context.Context, name string) (float64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	value, ok := m.gauges[name]
 	return value, ok
 }
-func (m *MemStorage) GetCounter(name string) (int64, bool) {
+
+// GetCounter returns the current value of a counter metric.
+func (m *MemStorage) GetCounter(_ context.Context, name string) (int64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	value, ok := m.counters[name]
 	return value, ok
 }
-func (m *MemStorage) GetAll() (map[string]float64, map[string]int64) {
+
+// GetAll returns defensive copies of all stored metrics.
+func (m *MemStorage) GetAll(_ context.Context) (map[string]float64, map[string]int64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	//return m.gauges, m.counters
@@ -78,12 +118,14 @@ func (m *MemStorage) GetAll() (map[string]float64, map[string]int64) {
 	return gaugesOut, countersOut
 }
 
+// SetSyncSaveOnUpdate configures a callback that is executed after each successful update.
 func (m *MemStorage) SetSyncSaveOnUpdate(callback func() error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onUpdate = callback
 }
 
+// SaveToFile writes a full metrics snapshot to path.
 func (m *MemStorage) SaveToFile(path string) error {
 	metrics := m.snapshot()
 
@@ -129,6 +171,7 @@ func (m *MemStorage) SaveToFile(path string) error {
 	return nil
 }
 
+// LoadFromFile restores metrics from a previously saved snapshot file.
 func (m *MemStorage) LoadFromFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -176,37 +219,59 @@ func (m *MemStorage) snapshot() []models.Metrics {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	gaugeNames := make([]string, 0, len(m.gauges))
-	for name := range m.gauges {
-		gaugeNames = append(gaugeNames, name)
-	}
-	sort.Strings(gaugeNames)
+	metrics := make([]models.Metrics, 0, len(m.gauges)+len(m.counters))
+	gaugeValues := make([]float64, len(m.gauges))
+	gaugeIndex := 0
 
-	counterNames := make([]string, 0, len(m.counters))
-	for name := range m.counters {
-		counterNames = append(counterNames, name)
-	}
-	sort.Strings(counterNames)
-
-	metrics := make([]models.Metrics, 0, len(gaugeNames)+len(counterNames))
-
-	for _, name := range gaugeNames {
-		value := m.gauges[name]
+	for name, value := range m.gauges {
+		gaugeValues[gaugeIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
-			Value: &value,
+			Value: &gaugeValues[gaugeIndex],
 		})
+		gaugeIndex++
 	}
 
-	for _, name := range counterNames {
-		delta := m.counters[name]
+	counterValues := make([]int64, len(m.counters))
+	counterIndex := 0
+	for name, delta := range m.counters {
+		counterValues[counterIndex] = delta
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Counter,
-			Delta: &delta,
+			Delta: &counterValues[counterIndex],
 		})
+		counterIndex++
 	}
 
+	sort.Slice(metrics, func(i, j int) bool {
+		if metrics[i].MType != metrics[j].MType {
+			return metrics[i].MType == models.Gauge
+		}
+		return metrics[i].ID < metrics[j].ID
+	})
+
 	return metrics
+}
+
+func validateMetric(metric models.Metrics) error {
+	if metric.ID == "" {
+		return errors.New("metric name is required")
+	}
+
+	switch metric.MType {
+	case models.Gauge:
+		if metric.Value == nil {
+			return errors.New("gauge value is required")
+		}
+	case models.Counter:
+		if metric.Delta == nil {
+			return errors.New("counter delta is required")
+		}
+	default:
+		return errors.New("unsupported metric type")
+	}
+
+	return nil
 }

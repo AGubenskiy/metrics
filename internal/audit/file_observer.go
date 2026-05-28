@@ -1,0 +1,48 @@
+package audit
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"sync"
+
+	gojson "github.com/goccy/go-json"
+)
+
+// FileObserver appends audit events to a file as JSON lines.
+type FileObserver struct {
+	path string
+	mu   sync.Mutex
+}
+
+// NewFileObserver creates a file-backed audit observer.
+func NewFileObserver(path string) *FileObserver {
+	return &FileObserver{path: path}
+}
+
+// Update serializes event and appends it to the configured file.
+func (o *FileObserver) Update(_ context.Context, event Event) error {
+	payload, err := gojson.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal audit event: %w", err)
+	}
+
+	file, err := os.OpenFile(o.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open audit file %q: %w", o.path, err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+
+	payload = append(payload, '\n')
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if _, err := file.Write(payload); err != nil {
+		return fmt.Errorf("write audit file %q: %w", o.path, err)
+	}
+
+	return nil
+}

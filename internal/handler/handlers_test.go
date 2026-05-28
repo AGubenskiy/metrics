@@ -3,30 +3,88 @@ package handler
 import (
 	"bytes"
 	"compress/gzip"
-	"github.com/AGubenskiy/metrics/internal/middleware"
-	models "github.com/AGubenskiy/metrics/internal/model"
-	"github.com/go-chi/chi/v5"
-	gojson "github.com/goccy/go-json"
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/AGubenskiy/metrics/internal/audit"
+	"github.com/AGubenskiy/metrics/internal/middleware"
+	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/AGubenskiy/metrics/internal/service"
+	"github.com/AGubenskiy/metrics/internal/signing"
+	"github.com/go-chi/chi/v5"
+	gojson "github.com/goccy/go-json"
+	gomock "go.uber.org/mock/gomock"
+
 	"github.com/AGubenskiy/metrics/internal/storage"
 )
 
 func setupRouter() http.Handler {
 	store := storage.NewMemStorage()
-	h := NewHandler(store)
+	h := NewHandler(service.NewMetrics(store))
 
 	r := chi.NewRouter()
 	r.Use(middleware.Gzip)
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
 	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/update/", h.UpdateMetricJSON)
+	r.Post("/updates", h.UpdateMetricsJSON)
+	r.Post("/updates/", h.UpdateMetricsJSON)
 	r.Get("/value/{type}/{name}", h.GetMetricValue)
 	r.Post("/value", h.GetMetricValueJSON)
+	r.Post("/value/", h.GetMetricValueJSON)
 	r.Get("/", h.GetAllMetrics)
+	r.Get("/ping", h.Ping)
+
+	return r
+}
+
+func setupRouterWithKey(key string) http.Handler {
+	store := storage.NewMemStorage()
+	h := NewHandler(service.NewMetrics(store))
+
+	r := chi.NewRouter()
+	r.Use(middleware.Gzip)
+	r.Use(middleware.Hash(key))
+	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
+	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/update/", h.UpdateMetricJSON)
+	r.Post("/updates", h.UpdateMetricsJSON)
+	r.Post("/updates/", h.UpdateMetricsJSON)
+	r.Get("/value/{type}/{name}", h.GetMetricValue)
+	r.Post("/value", h.GetMetricValueJSON)
+	r.Post("/value/", h.GetMetricValueJSON)
+	r.Get("/", h.GetAllMetrics)
+	r.Get("/ping", h.Ping)
+
+	return r
+}
+
+func setupRouterWithPinger(pinger Pinger) http.Handler {
+	store := storage.NewMemStorage()
+	h := NewHandlerWithPinger(service.NewMetrics(store), pinger)
+
+	r := chi.NewRouter()
+	r.Get("/ping", h.Ping)
+
+	return r
+}
+
+func setupRouterWithAudit(publisher AuditPublisher) http.Handler {
+	store := storage.NewMemStorage()
+	h := NewHandlerWithAudit(service.NewMetrics(store), nil, publisher)
+
+	r := chi.NewRouter()
+	r.Use(middleware.Gzip)
+	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
+	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/update/", h.UpdateMetricJSON)
+	r.Post("/updates", h.UpdateMetricsJSON)
+	r.Post("/updates/", h.UpdateMetricsJSON)
 
 	return r
 }
@@ -279,6 +337,56 @@ func TestUpdateMetricJSONWithGzipBody(t *testing.T) {
 	}
 }
 
+func TestUpdateMetricJSONRejectsInvalidHash(t *testing.T) {
+	router := setupRouterWithKey("test-key")
+
+	gaugeValue := 7.7
+	body, err := gojson.Marshal(models.Metrics{
+		ID:    "signedGauge",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(signing.HeaderName, "invalid")
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestUpdateMetricJSONAcceptsValidHash(t *testing.T) {
+	router := setupRouterWithKey("test-key")
+
+	gaugeValue := 7.7
+	body, err := gojson.Marshal(models.Metrics{
+		ID:    "signedGauge",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(signing.HeaderName, signing.Hash(body, "test-key"))
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+}
+
 func TestGzipResponseForJSON(t *testing.T) {
 	router := setupRouter()
 
@@ -320,6 +428,184 @@ func TestGzipResponseForJSON(t *testing.T) {
 	}
 }
 
+func TestJSONResponseContainsHashHeaderWhenKeyConfigured(t *testing.T) {
+	router := setupRouterWithKey("test-key")
+
+	gaugeValue := 11.11
+	updateBody, _ := gojson.Marshal(models.Metrics{
+		ID:    "jsonSigned",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+	updateReq := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(updateBody))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateReq.Header.Set(signing.HeaderName, signing.Hash(updateBody, "test-key"))
+	router.ServeHTTP(httptest.NewRecorder(), updateReq)
+
+	valueBody, _ := gojson.Marshal(models.Metrics{
+		ID:    "jsonSigned",
+		MType: models.Gauge,
+	})
+	valueReq := httptest.NewRequest(http.MethodPost, "/value", bytes.NewReader(valueBody))
+	valueReq.Header.Set("Content-Type", "application/json")
+	valueReq.Header.Set(signing.HeaderName, signing.Hash(valueBody, "test-key"))
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, valueReq)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	responseHash := rr.Header().Get(signing.HeaderName)
+	if responseHash == "" {
+		t.Fatalf("expected %s header to be set", signing.HeaderName)
+	}
+
+	if expected := signing.Hash(rr.Body.Bytes(), "test-key"); responseHash != expected {
+		t.Fatalf("expected %s %q, got %q", signing.HeaderName, expected, responseHash)
+	}
+}
+
+func TestUpdateMetricsJSON(t *testing.T) {
+	router := setupRouter()
+
+	gaugeValue := 5.5
+	counterDelta := int64(7)
+	requestMetrics := []models.Metrics{
+		{
+			ID:    "batchGauge",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+		{
+			ID:    "batchCounter",
+			MType: models.Counter,
+			Delta: &counterDelta,
+		},
+	}
+
+	body, err := gojson.Marshal(requestMetrics)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	valueGaugeReq, _ := gojson.Marshal(models.Metrics{ID: "batchGauge", MType: models.Gauge})
+	gaugeReq := httptest.NewRequest(http.MethodPost, "/value/", bytes.NewReader(valueGaugeReq))
+	gaugeReq.Header.Set("Content-Type", "application/json")
+	gaugeRR := httptest.NewRecorder()
+	router.ServeHTTP(gaugeRR, gaugeReq)
+	if gaugeRR.Code != http.StatusOK {
+		t.Fatalf("expected status %d for gauge value, got %d", http.StatusOK, gaugeRR.Code)
+	}
+
+	valueCounterReq, _ := gojson.Marshal(models.Metrics{ID: "batchCounter", MType: models.Counter})
+	counterReq := httptest.NewRequest(http.MethodPost, "/value/", bytes.NewReader(valueCounterReq))
+	counterReq.Header.Set("Content-Type", "application/json")
+	counterRR := httptest.NewRecorder()
+	router.ServeHTTP(counterRR, counterReq)
+	if counterRR.Code != http.StatusOK {
+		t.Fatalf("expected status %d for counter value, got %d", http.StatusOK, counterRR.Code)
+	}
+}
+
+func TestUpdateMetricsJSONWithGzipBody(t *testing.T) {
+	router := setupRouter()
+
+	gaugeValue := 8.8
+	requestMetrics := []models.Metrics{
+		{
+			ID:    "gzipBatchGauge",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+	}
+
+	body, err := gojson.Marshal(requestMetrics)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	compressedBody := gzipBytes(t, body)
+	req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(compressedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+}
+
+func TestUpdateMetricsJSONPublishesAuditEvent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	publisher := NewMockAuditPublisher(ctrl)
+	var gotEvent audit.Event
+
+	publisher.EXPECT().
+		Notify(gomock.Any(), gomock.AssignableToTypeOf(audit.Event{})).
+		DoAndReturn(func(_ context.Context, event audit.Event) error {
+			gotEvent = event
+			return nil
+		})
+
+	router := setupRouterWithAudit(publisher)
+
+	gaugeValue := 8.8
+	counterDelta := int64(3)
+	requestMetrics := []models.Metrics{
+		{
+			ID:    "auditGauge",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+		{
+			ID:    "auditCounter",
+			MType: models.Counter,
+			Delta: &counterDelta,
+		},
+	}
+
+	body, err := gojson.Marshal(requestMetrics)
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/updates", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.168.0.42:12345"
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	if gotEvent.IPAddress != "192.168.0.42" {
+		t.Fatalf("expected IP %q, got %q", "192.168.0.42", gotEvent.IPAddress)
+	}
+	if len(gotEvent.Metrics) != 2 {
+		t.Fatalf("expected 2 metrics in audit event, got %d", len(gotEvent.Metrics))
+	}
+	if gotEvent.Metrics[0] != "auditGauge" || gotEvent.Metrics[1] != "auditCounter" {
+		t.Fatalf("unexpected metric names in audit event: %#v", gotEvent.Metrics)
+	}
+	if gotEvent.TS == 0 {
+		t.Fatal("expected non-zero audit timestamp")
+	}
+}
+
 func TestGzipResponseForHTML(t *testing.T) {
 	router := setupRouter()
 
@@ -356,6 +642,60 @@ func TestNoGzipForUnsupportedContentType(t *testing.T) {
 	}
 	if got := rr.Header().Get("Content-Encoding"); got != "" {
 		t.Fatalf("expected empty Content-Encoding for text/plain response, got %q", got)
+	}
+}
+
+func TestPing(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupPinger func(*testing.T) Pinger
+		wantStatus  int
+	}{
+		{
+			name: "db not configured",
+			setupPinger: func(*testing.T) Pinger {
+				return nil
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "ping ok",
+			setupPinger: func(t *testing.T) Pinger {
+				t.Helper()
+
+				ctrl := gomock.NewController(t)
+				pinger := NewMockPinger(ctrl)
+				pinger.EXPECT().PingContext(gomock.Any()).Return(nil)
+				return pinger
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "ping fails",
+			setupPinger: func(t *testing.T) Pinger {
+				t.Helper()
+
+				ctrl := gomock.NewController(t)
+				pinger := NewMockPinger(ctrl)
+				pinger.EXPECT().PingContext(gomock.Any()).Return(fmt.Errorf("db unavailable"))
+				return pinger
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := setupRouterWithPinger(tt.setupPinger(t))
+			req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+			rr := httptest.NewRecorder()
+
+			router.ServeHTTP(rr, req)
+
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rr.Code)
+			}
+		})
 	}
 }
 
