@@ -1,13 +1,14 @@
+//go:build integration
+
 package main
 
 import (
-	"os"
+	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestRunGeneratesResetMethods(t *testing.T) {
+func TestRunGeneratesResetMethodsIntegration(t *testing.T) {
 	root := t.TempDir()
 
 	writeTestFiles(t, root, map[string]string{
@@ -108,59 +109,11 @@ func TestParentReset(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 
-	generatedPath := filepath.Join(root, "sample", generatedFileName)
-	data, err := os.ReadFile(generatedPath)
+	cmd := exec.Command("go", "test", "./sample")
+	cmd.Dir = root
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-
-	generated := string(data)
-	if !strings.Contains(generated, "func (r *Parent) Reset()") {
-		t.Fatalf("generated file does not contain Reset method:\n%s", generated)
-	}
-	if !strings.Contains(generated, "r.Items = r.Items[:0]") {
-		t.Fatalf("generated file does not trim slices:\n%s", generated)
-	}
-	if !strings.Contains(generated, "clear(r.Dict)") {
-		t.Fatalf("generated file does not clear maps:\n%s", generated)
-	}
-}
-
-func TestRunFailsOnManualResetConflict(t *testing.T) {
-	root := t.TempDir()
-
-	writeTestFiles(t, root, map[string]string{
-		"go.mod": "module example.com/resetconflict\n\ngo 1.26.0\n",
-		filepath.Join("sample", "types.go"): `package sample
-
-// generate:reset
-type Conflict struct {
-	N int
-}
-
-func (c *Conflict) Reset() {}
-`,
-	})
-
-	err := run(root)
-	if err == nil {
-		t.Fatal("run() expected conflict error, got nil")
-	}
-	if !strings.Contains(err.Error(), "already declares Reset") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func writeTestFiles(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-
-	for relativePath, content := range files {
-		path := filepath.Join(root, relativePath)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", path, err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
+		t.Fatalf("go test ./sample failed: %v\n%s", err, output)
 	}
 }

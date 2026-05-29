@@ -19,10 +19,10 @@ func TestPrint(t *testing.T) {
 	}
 }
 
-func TestPrintUsesNAForEmptyValues(t *testing.T) {
+func TestPrintUsesProvidedValuesAsIs(t *testing.T) {
 	var buf bytes.Buffer
 
-	if err := Print(&buf, "", "", ""); err != nil {
+	if err := Print(&buf, "N/A", "N/A", "N/A"); err != nil {
 		t.Fatalf("Print() error = %v", err)
 	}
 

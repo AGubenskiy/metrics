@@ -3,7 +3,8 @@ package pool
 import "testing"
 
 type stub struct {
-	value int
+	value      int
+	resetCalls int
 }
 
 func (s *stub) Reset() {
@@ -11,6 +12,7 @@ func (s *stub) Reset() {
 		return
 	}
 
+	s.resetCalls++
 	s.value = 0
 }
 
@@ -28,7 +30,7 @@ func TestGetUsesFactory(t *testing.T) {
 	}
 }
 
-func TestPutResetsValueBeforeReuse(t *testing.T) {
+func TestPutResetsValueBeforeReturningToPool(t *testing.T) {
 	p := New(func() *stub {
 		return &stub{}
 	})
@@ -36,12 +38,11 @@ func TestPutResetsValueBeforeReuse(t *testing.T) {
 	value := &stub{value: 99}
 	p.Put(value)
 
-	got := p.Get()
-	if got != value {
-		t.Fatalf("Get() returned unexpected pointer: got %p, want %p", got, value)
+	if value.resetCalls == 0 {
+		t.Fatal("Put() did not call Reset()")
 	}
-	if got.value != 0 {
-		t.Fatalf("Get() value = %d, want 0", got.value)
+	if value.value != 0 {
+		t.Fatalf("Put() did not reset value: got %d, want 0", value.value)
 	}
 }
 
