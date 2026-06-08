@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/AGubenskiy/metrics/internal/signing"
 	gojson "github.com/goccy/go-json"
@@ -40,6 +42,7 @@ type Agent struct {
 	retryDelays []time.Duration
 	sleep       func(time.Duration)
 	key         string
+	publicKey   *rsa.PublicKey
 
 	readMemStats      func(*runtime.MemStats)
 	readVirtualMemory func() (*mem.VirtualMemoryStat, error)
@@ -89,6 +92,11 @@ func (a *Agent) SetLogger(logger *zap.Logger) {
 		return
 	}
 	a.logger = logger
+}
+
+// SetEncryptionPublicKey enables encryption for outgoing request bodies.
+func (a *Agent) SetEncryptionPublicKey(key *rsa.PublicKey) {
+	a.publicKey = key
 }
 
 // Run starts metric collection and reporting loops and blocks until ctx is cancelled.
@@ -404,15 +412,27 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	requestBody := compressedBody
+	encrypted := false
+	if a.publicKey != nil {
+		requestBody, err = cryptoutil.Encrypt(compressedBody, a.publicKey)
+		if err != nil {
+			return 0, err
+		}
+		encrypted = true
+	}
 
 	endpointURL := a.buildURL(path)
-	req, err := http.NewRequest(http.MethodPost, endpointURL, bytes.NewReader(compressedBody))
+	req, err := http.NewRequest(http.MethodPost, endpointURL, bytes.NewReader(requestBody))
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	if encrypted {
+		req.Header.Set(cryptoutil.HeaderName, cryptoutil.HeaderValue)
+	}
 	if a.key != "" {
 		req.Header.Set(signing.HeaderName, signing.Hash(body, a.key))
 	}

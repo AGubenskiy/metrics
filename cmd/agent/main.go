@@ -10,6 +10,7 @@ import (
 
 	"github.com/AGubenskiy/metrics/internal/agent"
 	"github.com/AGubenskiy/metrics/internal/buildinfo"
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	"go.uber.org/zap"
 )
 
@@ -37,6 +38,7 @@ func main() {
 	pollInterval := flag.Int("p", defaultPollInterval, "poll interval in seconds")
 	rateLimit := flag.Int("l", defaultRateLimit, "max out requests")
 	key := flag.String("k", "", "hash key")
+	cryptoKey := flag.String("crypto-key", "", "path to public crypto key")
 	flag.Parse()
 
 	setFlags := map[string]bool{}
@@ -95,12 +97,20 @@ func main() {
 		finalKey = *key
 	}
 
+	finalCryptoKey := ""
+	if envCryptoKey := os.Getenv("CRYPTO_KEY"); envCryptoKey != "" {
+		finalCryptoKey = envCryptoKey
+	} else if setFlags["crypto-key"] {
+		finalCryptoKey = *cryptoKey
+	}
+
 	log.Printf(
-		"Agent started: addr=http://%s, report=%v, poll=%v, rate_limit=%v",
+		"Agent started: addr=http://%s, report=%v, poll=%v, rate_limit=%v, crypto=%t",
 		finalAddr,
 		finalReportInterval,
 		finalPollInterval,
 		finalRateLimit,
+		finalCryptoKey != "",
 	)
 
 	logger, err := zap.NewProduction()
@@ -114,6 +124,13 @@ func main() {
 	}()
 
 	a := agent.NewAgentWithRateLimit("http://"+finalAddr, finalReportInterval, finalPollInterval, finalRateLimit, finalKey)
+	if finalCryptoKey != "" {
+		publicKey, err := cryptoutil.LoadPublicKey(finalCryptoKey)
+		if err != nil {
+			log.Fatalf("cannot load public crypto key: %v", err)
+		}
+		a.SetEncryptionPublicKey(publicKey)
+	}
 	a.SetLogger(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

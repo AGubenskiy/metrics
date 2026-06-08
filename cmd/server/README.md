@@ -58,6 +58,8 @@ GET /ping
 | -f |	Путь до файла с метриками	| `%TEMP%/metrics-db.json` |
 | -r |	Восстанавливать метрики из файла при старте	| true |
 | -d |	DSN подключения к PostgreSQL	| "" |
+| -k |	Ключ для HMAC-проверки тела запроса	| "" |
+| -crypto-key |	Путь к PEM-файлу с приватным ключом для расшифровки запросов агента	| "" |
 
 Переменные окружения:
 - `ADDRESS`
@@ -65,6 +67,14 @@ GET /ping
 - `FILE_STORAGE_PATH`
 - `RESTORE`
 - `DATABASE_DSN` (имеет приоритет над `-d`)
+- `KEY`
+- `CRYPTO_KEY` — путь к PEM-файлу с приватным ключом
+
+Пример генерации пары ключей:
+````
+openssl genrsa -out private.pem 2048
+openssl rsa -in private.pem -pubout -out public.pem
+````
 
 ## Выбор хранилища
 Порядок выбора backend при старте:

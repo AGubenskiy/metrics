@@ -17,6 +17,7 @@ import (
 
 	"github.com/AGubenskiy/metrics/internal/audit"
 	"github.com/AGubenskiy/metrics/internal/buildinfo"
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
@@ -54,6 +55,7 @@ func main() {
 	restore := flag.Bool("r", defaultRestore, "restore metrics from file at startup")
 	databaseDSN := flag.String("d", defaultDatabaseDSN, "database connection DSN")
 	key := flag.String("k", "", "hash key")
+	cryptoKey := flag.String("crypto-key", "", "path to private crypto key")
 	auditFile := flag.String("audit-file", "", "path to audit log file")
 	auditURL := flag.String("audit-url", "", "audit receiver URL")
 	flag.Parse()
@@ -82,6 +84,7 @@ func main() {
 
 	finalDatabaseDSN := resolveStringSetting("DATABASE_DSN", setFlags["d"], *databaseDSN, defaultDatabaseDSN)
 	finalKey := resolveStringSetting("KEY", setFlags["k"], *key, "")
+	finalCryptoKey := resolveStringSetting("CRYPTO_KEY", setFlags["crypto-key"], *cryptoKey, "")
 	finalAuditFile := resolveStringSetting("AUDIT_FILE", setFlags["audit-file"], *auditFile, "")
 	finalAuditURL := resolveStringSetting("AUDIT_URL", setFlags["audit-url"], *auditURL, "")
 	fileStorageConfigured := isNonEmptyEnv("FILE_STORAGE_PATH") ||
@@ -169,6 +172,13 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
+	if finalCryptoKey != "" {
+		privateKey, err := cryptoutil.LoadPrivateKey(finalCryptoKey)
+		if err != nil {
+			log.Fatalf("cannot load private crypto key: %v", err)
+		}
+		r.Use(middleware.Decrypt(privateKey))
+	}
 	r.Use(middleware.Gzip)
 	r.Use(middleware.Hash(finalKey))
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
@@ -183,13 +193,14 @@ func main() {
 	r.Get("/ping", h.Ping)
 
 	log.Printf(
-		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t, audit_file=%t, audit_url=%t)\n",
+		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t, crypto=%t, audit_file=%t, audit_url=%t)\n",
 		finalAddr,
 		storageMode,
 		finalStoreInterval,
 		finalFileStoragePath,
 		finalRestore,
 		finalDatabaseDSN != "",
+		finalCryptoKey != "",
 		finalAuditFile != "",
 		finalAuditURL != "",
 	)
