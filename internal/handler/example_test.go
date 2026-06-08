@@ -25,16 +25,16 @@ func ExampleHandler_UpdateMetric() {
 	defer server.Close()
 
 	resp, err := http.Post(server.URL+"/update/gauge/Alloc/42.5", "text/plain", nil)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 
 	fmt.Println(resp.StatusCode)
@@ -53,16 +53,16 @@ func ExampleHandler_UpdateMetricJSON() {
 		"application/json",
 		strings.NewReader(`{"id":"Alloc","type":"gauge","value":42.5}`),
 	)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 
 	fmt.Println(resp.StatusCode)
@@ -81,8 +81,8 @@ func ExampleHandler_UpdateMetricsJSON() {
 		"application/json",
 		strings.NewReader(`[{"id":"Alloc","type":"gauge","value":42.5},{"id":"PollCount","type":"counter","delta":3}]`),
 	)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -93,16 +93,16 @@ func ExampleHandler_UpdateMetricsJSON() {
 		"application/json",
 		strings.NewReader(`{"id":"PollCount","type":"counter"}`),
 	)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 	defer func() {
 		_ = valueResp.Body.Close()
 	}()
 
 	body, err := io.ReadAll(valueResp.Body)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 
 	fmt.Println(resp.StatusCode)
@@ -121,8 +121,8 @@ func ExampleHandler_GetMetricValueJSON() {
 		"application/json",
 		strings.NewReader(`{"id":"Alloc","type":"gauge","value":42.5}`),
 	)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 	defer func() {
 		_ = updateResp.Body.Close()
@@ -133,16 +133,16 @@ func ExampleHandler_GetMetricValueJSON() {
 		"application/json",
 		strings.NewReader(`{"id":"Alloc","type":"gauge"}`),
 	)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 
 	fmt.Println(resp.StatusCode)
@@ -157,8 +157,8 @@ func ExampleHandler_Ping() {
 	defer server.Close()
 
 	resp, err := http.Get(server.URL + "/ping")
-	if err != nil {
-		panic(err)
+	if !exampleNoError(err) {
+		return
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -182,4 +182,13 @@ func newExampleRouter(pinger handler.Pinger) http.Handler {
 	r.Get("/ping", h.Ping)
 
 	return r
+}
+
+func exampleNoError(err error) bool {
+	if err == nil {
+		return true
+	}
+
+	fmt.Println("unexpected error:", err)
+	return false
 }

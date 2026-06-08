@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/AGubenskiy/metrics/internal/audit"
+	"github.com/AGubenskiy/metrics/internal/buildinfo"
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
@@ -27,7 +28,17 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	buildVersion = "N/A"
+	buildDate    = "N/A"
+	buildCommit  = "N/A"
+)
+
 func main() {
+	if err := buildinfo.Print(os.Stdout, buildVersion, buildDate, buildCommit); err != nil {
+		log.Printf("cannot print build info: %v", err)
+	}
+
 	const (
 		defaultAddr          = "localhost:8080"
 		defaultStoreInterval = 300
