@@ -225,7 +225,7 @@ func main() {
 		Handler: r,
 	}
 
-	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer stopSignals()
 
 	serverErrCh := make(chan error, 1)
@@ -245,10 +245,7 @@ func main() {
 	case <-signalCtx.Done():
 		log.Printf("shutdown signal-stopping HTTP server")
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		if err := server.Shutdown(context.Background()); err != nil {
 			log.Printf("graceful shutdown failed: %v", err)
 		}
 	}

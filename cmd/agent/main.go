@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/AGubenskiy/metrics/internal/agent"
 	"github.com/AGubenskiy/metrics/internal/buildinfo"
@@ -114,7 +115,7 @@ func main() {
 	}
 	a.SetLogger(logger)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer stop()
 
 	a.Run(ctx)
