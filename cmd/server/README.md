@@ -60,15 +60,38 @@ GET /ping
 | -d |	DSN подключения к PostgreSQL	| "" |
 | -k |	Ключ для HMAC-проверки тела запроса	| "" |
 | -crypto-key |	Путь к PEM-файлу с приватным ключом для расшифровки запросов агента	| "" |
+| -audit-file |	Путь к файлу audit-лога	| "" |
+| -audit-url |	URL получателя audit-событий	| "" |
+| -c, -config |	Путь к JSON-файлу конфигурации	| "" |
 
 Переменные окружения:
 - `ADDRESS`
 - `STORE_INTERVAL`
-- `FILE_STORAGE_PATH`
+- `STORE_FILE` или `FILE_STORAGE_PATH`
 - `RESTORE`
 - `DATABASE_DSN` (имеет приоритет над `-d`)
 - `KEY`
 - `CRYPTO_KEY` — путь к PEM-файлу с приватным ключом
+- `AUDIT_FILE`
+- `AUDIT_URL`
+- `CONFIG` — путь к JSON-файлу конфигурации
+
+Значения применяются в порядке приоритета: переменные окружения, флаги, JSON-файл, значения по умолчанию.
+
+Пример JSON-конфигурации:
+```json
+{
+  "address": "localhost:8080",
+  "restore": true,
+  "store_interval": "1s",
+  "store_file": "/path/to/file.db",
+  "database_dsn": "",
+  "key": "",
+  "crypto_key": "/path/to/private.pem",
+  "audit_file": "",
+  "audit_url": ""
+}
+```
 
 Пример генерации пары ключей:
 ````
@@ -79,5 +102,5 @@ openssl rsa -in private.pem -pubout -out public.pem
 ## Выбор хранилища
 Порядок выбора backend при старте:
 1. PostgreSQL, если `DATABASE_DSN` или `-d` заданы и не пустые.
-2. Файл, если заданы файловые настройки (`FILE_STORAGE_PATH`/`STORE_INTERVAL`/`RESTORE` или `-f`/`-i`/`-r`).
+2. Файл, если заданы файловые настройки (`STORE_FILE`/`FILE_STORAGE_PATH`/`STORE_INTERVAL`/`RESTORE`, `-f`/`-i`/`-r` или JSON-поля `store_file`/`store_interval`/`restore`).
 3. Память, если не задан ни PostgreSQL, ни файловый режим.
