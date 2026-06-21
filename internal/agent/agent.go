@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/AGubenskiy/metrics/internal/signing"
 	gojson "github.com/goccy/go-json"
@@ -40,12 +42,15 @@ type Agent struct {
 	retryDelays []time.Duration
 	sleep       func(time.Duration)
 	key         string
+	publicKey   *rsa.PublicKey
 
 	readMemStats      func(*runtime.MemStats)
 	readVirtualMemory func() (*mem.VirtualMemoryStat, error)
 	readCPUPercent    func() ([]float64, error)
 
-	batchDisabled atomic.Bool
+	batchDisabled   atomic.Bool
+	metricsVersion  atomic.Uint64
+	reportedVersion atomic.Uint64
 }
 
 // NewAgent creates an agent with single-request reporting mode.
@@ -91,6 +96,11 @@ func (a *Agent) SetLogger(logger *zap.Logger) {
 	a.logger = logger
 }
 
+// SetEncryptionPublicKey enables encryption for outgoing request bodies.
+func (a *Agent) SetEncryptionPublicKey(key *rsa.PublicKey) {
+	a.publicKey = key
+}
+
 // Run starts metric collection and reporting loops and blocks until ctx is cancelled.
 func (a *Agent) Run(ctx context.Context) {
 	jobs := make(chan sendJob, a.rateLimit*2)
@@ -108,6 +118,7 @@ func (a *Agent) Run(ctx context.Context) {
 	go a.runReporter(ctx, jobs, &loopsWG)
 
 	loopsWG.Wait()
+	a.reportPending(context.Background(), jobs)
 	close(jobs)
 	workersWG.Wait()
 }
@@ -148,6 +159,7 @@ func (a *Agent) poll() {
 	a.gauges["TotalAlloc"] = float64(m.TotalAlloc)
 	a.gauges["RandomValue"] = rand.Float64()
 	a.counters["PollCount"]++
+	a.metricsVersion.Add(1)
 }
 
 func (a *Agent) pollSystem() {
@@ -178,22 +190,38 @@ func (a *Agent) pollSystem() {
 	for i, value := range cpuPercentages {
 		a.gauges[fmt.Sprintf("CPUutilization%d", i+1)] = value
 	}
+	a.metricsVersion.Add(1)
 }
 
 func (a *Agent) report() {
-	metrics := a.collectMetricsBatch()
+	metrics, version := a.collectMetricsSnapshot()
 	if len(metrics) == 0 {
 		return
 	}
 
-	if a.sendMetricsBatch(metrics) {
+	result := a.sendMetricsBatch(metrics)
+	if result.fallbackToSingle {
+		allSent := true
 		for _, metric := range metrics {
-			a.sendMetric(metric)
+			if !a.sendMetric(metric) {
+				allSent = false
+			}
 		}
+		if !allSent {
+			return
+		}
+	} else if !result.success {
+		return
 	}
+	a.markReported(version)
 }
 
 func (a *Agent) collectMetricsBatch() []models.Metrics {
+	metrics, _ := a.collectMetricsSnapshot()
+	return metrics
+}
+
+func (a *Agent) collectMetricsSnapshot() ([]models.Metrics, uint64) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
@@ -223,7 +251,26 @@ func (a *Agent) collectMetricsBatch() []models.Metrics {
 		counterIndex++
 	}
 
-	return metrics
+	return metrics, a.metricsVersion.Load()
+}
+
+func (a *Agent) reportPending(ctx context.Context, jobs chan<- sendJob) {
+	if a.metricsVersion.Load() == a.reportedVersion.Load() {
+		return
+	}
+	a.reportWithWorkerPool(ctx, jobs)
+}
+
+func (a *Agent) markReported(version uint64) {
+	for {
+		current := a.reportedVersion.Load()
+		if current >= version {
+			return
+		}
+		if a.reportedVersion.CompareAndSwap(current, version) {
+			return
+		}
+	}
 }
 
 func (a *Agent) runRuntimeCollector(ctx context.Context, wg *sync.WaitGroup) {
@@ -269,46 +316,70 @@ func (a *Agent) runReporter(ctx context.Context, jobs chan<- sendJob, wg *sync.W
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.reportWithWorkerPool(ctx, jobs)
+			a.reportWithWorkerPool(context.Background(), jobs)
 		}
 	}
 }
 
-func (a *Agent) reportWithWorkerPool(ctx context.Context, jobs chan<- sendJob) {
-	metrics := a.collectMetricsBatch()
+func (a *Agent) reportWithWorkerPool(ctx context.Context, jobs chan<- sendJob) bool {
+	metrics, version := a.collectMetricsSnapshot()
 	if len(metrics) == 0 {
-		return
+		a.markReported(version)
+		return true
 	}
 
 	if !a.batchDisabled.Load() {
 		resultCh := make(chan sendResult, 1)
 		if !a.enqueueJob(ctx, jobs, sendJob{batch: metrics, result: resultCh}) {
-			return
+			return false
 		}
 
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case result := <-resultCh:
 			if result.fallbackToSingle {
 				a.batchDisabled.Store(true)
-				a.enqueueSingleMetricJobs(ctx, jobs, metrics)
+				if !a.enqueueSingleMetricJobs(ctx, jobs, metrics) {
+					return false
+				}
+			} else if !result.success {
+				return false
 			}
 		}
 
-		return
+		a.markReported(version)
+		return true
 	}
 
-	a.enqueueSingleMetricJobs(ctx, jobs, metrics)
+	if !a.enqueueSingleMetricJobs(ctx, jobs, metrics) {
+		return false
+	}
+	a.markReported(version)
+	return true
 }
 
-func (a *Agent) enqueueSingleMetricJobs(ctx context.Context, jobs chan<- sendJob, metrics []models.Metrics) {
+func (a *Agent) enqueueSingleMetricJobs(ctx context.Context, jobs chan<- sendJob, metrics []models.Metrics) bool {
+	resultCh := make(chan sendResult, len(metrics))
 	for _, metric := range metrics {
 		metricCopy := metric
-		if !a.enqueueJob(ctx, jobs, sendJob{metric: &metricCopy}) {
-			return
+		if !a.enqueueJob(ctx, jobs, sendJob{metric: &metricCopy, result: resultCh}) {
+			return false
 		}
 	}
+
+	allSent := true
+	for range metrics {
+		select {
+		case <-ctx.Done():
+			return false
+		case result := <-resultCh:
+			if !result.success {
+				allSent = false
+			}
+		}
+	}
+	return allSent
 }
 
 func (a *Agent) enqueueJob(ctx context.Context, jobs chan<- sendJob, job sendJob) bool {
@@ -333,15 +404,14 @@ func (a *Agent) runWorker(jobs <-chan sendJob, wg *sync.WaitGroup) {
 
 func (a *Agent) processJob(job sendJob) sendResult {
 	if job.metric != nil {
-		a.sendMetric(*job.metric)
-		return sendResult{}
+		return sendResult{success: a.sendMetric(*job.metric)}
 	}
 
-	return sendResult{fallbackToSingle: a.sendMetricsBatch(job.batch)}
+	return a.sendMetricsBatch(job.batch)
 }
 
-// sendMetricsBatch returns true when caller should fallback to old single-metric API.
-func (a *Agent) sendMetricsBatch(metrics []models.Metrics) bool {
+// sendMetricsBatch returns whether the batch was delivered or should fallback to old single-metric API.
+func (a *Agent) sendMetricsBatch(metrics []models.Metrics) sendResult {
 	logFields := []zap.Field{
 		zap.Int("metrics_count", len(metrics)),
 	}
@@ -349,13 +419,13 @@ func (a *Agent) sendMetricsBatch(metrics []models.Metrics) bool {
 	body, err := gojson.Marshal(metrics)
 	if err != nil {
 		a.logger.Error("failed to marshal metrics batch", append(logFields, zap.Error(err))...)
-		return false
+		return sendResult{}
 	}
 
 	statusCode, err := a.sendCompressedJSONWithRetry("/updates/", body)
 	if err != nil {
 		a.logger.Error("failed to send metrics batch", append(logFields, zap.Error(err))...)
-		return false
+		return sendResult{}
 	}
 
 	if statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed {
@@ -363,7 +433,7 @@ func (a *Agent) sendMetricsBatch(metrics []models.Metrics) bool {
 			"batch endpoint is not supported, fallback to single metric updates",
 			append(logFields, zap.Int("status_code", statusCode))...,
 		)
-		return true
+		return sendResult{fallbackToSingle: true}
 	}
 
 	if statusCode != http.StatusOK {
@@ -371,12 +441,13 @@ func (a *Agent) sendMetricsBatch(metrics []models.Metrics) bool {
 			"server returned not OK status for metrics batch",
 			append(logFields, zap.Int("status_code", statusCode))...,
 		)
+		return sendResult{}
 	}
 
-	return false
+	return sendResult{success: true}
 }
 
-func (a *Agent) sendMetric(metric models.Metrics) {
+func (a *Agent) sendMetric(metric models.Metrics) bool {
 	logFields := []zap.Field{
 		zap.String("metric_id", metric.ID),
 		zap.String("metric_type", metric.MType),
@@ -385,18 +456,20 @@ func (a *Agent) sendMetric(metric models.Metrics) {
 	body, err := gojson.Marshal(metric)
 	if err != nil {
 		a.logger.Error("failed to marshal metric", append(logFields, zap.Error(err))...)
-		return
+		return false
 	}
 
 	statusCode, err := a.sendCompressedJSONWithRetry("/update", body)
 	if err != nil {
 		a.logger.Error("failed to send metric", append(logFields, zap.Error(err))...)
-		return
+		return false
 	}
 
 	if statusCode != http.StatusOK {
 		a.logger.Warn("server returned not OK status", append(logFields, zap.Int("status_code", statusCode))...)
+		return false
 	}
+	return true
 }
 
 func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
@@ -404,15 +477,27 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	requestBody := compressedBody
+	encrypted := false
+	if a.publicKey != nil {
+		requestBody, err = cryptoutil.Encrypt(compressedBody, a.publicKey)
+		if err != nil {
+			return 0, err
+		}
+		encrypted = true
+	}
 
 	endpointURL := a.buildURL(path)
-	req, err := http.NewRequest(http.MethodPost, endpointURL, bytes.NewReader(compressedBody))
+	req, err := http.NewRequest(http.MethodPost, endpointURL, bytes.NewReader(requestBody))
 	if err != nil {
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	if encrypted {
+		req.Header.Set(cryptoutil.HeaderName, cryptoutil.HeaderValue)
+	}
 	if a.key != "" {
 		req.Header.Set(signing.HeaderName, signing.Hash(body, a.key))
 	}
@@ -539,4 +624,5 @@ type sendJob struct {
 
 type sendResult struct {
 	fallbackToSingle bool
+	success          bool
 }

@@ -34,8 +34,41 @@ http://localhost:8080
 |-a|	Адрес HTTP-сервера	| localhost:8080|
 |-r |	Интервал отправки метрик (сек)|	10|
 |-p	 |Интервал опроса runtime-метрик (сек)|	2|
+|-l	 |Максимальное число одновременных исходящих запросов|	1|
+|-k	 |Ключ для HMAC-подписи тела запроса|	""|
+|-crypto-key	 |Путь к PEM-файлу с публичным ключом для шифрования запросов|	""|
+|-c, -config	 |Путь к JSON-файлу конфигурации|	""|
+
+Переменные окружения имеют приоритет над флагами:
+- `ADDRESS`
+- `REPORT_INTERVAL`
+- `POLL_INTERVAL`
+- `RATE_LIMIT`
+- `KEY`
+- `CRYPTO_KEY` — путь к PEM-файлу с публичным ключом
+- `CONFIG` — путь к JSON-файлу конфигурации
+
+Значения применяются в порядке приоритета: переменные окружения, флаги, JSON-файл, значения по умолчанию.
+
+Пример JSON-конфигурации:
+```json
+{
+  "address": "localhost:8080",
+  "report_interval": "1s",
+  "poll_interval": "1s",
+  "rate_limit": 1,
+  "key": "",
+  "crypto_key": "/path/to/public.pem"
+}
+```
 
 ### Пример запуска:
 ````
 -a=localhost:8080 -r=5 -p=1
+````
+
+### Пример генерации ключей:
+````
+openssl genrsa -out private.pem 2048
+openssl rsa -in private.pem -pubout -out public.pem
 ````

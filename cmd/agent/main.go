@@ -6,10 +6,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
+	"syscall"
 
 	"github.com/AGubenskiy/metrics/internal/agent"
 	"github.com/AGubenskiy/metrics/internal/buildinfo"
+	appconfig "github.com/AGubenskiy/metrics/internal/config"
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	"go.uber.org/zap"
 )
 
@@ -37,6 +39,10 @@ func main() {
 	pollInterval := flag.Int("p", defaultPollInterval, "poll interval in seconds")
 	rateLimit := flag.Int("l", defaultRateLimit, "max out requests")
 	key := flag.String("k", "", "hash key")
+	cryptoKey := flag.String("crypto-key", "", "path to public crypto key")
+	configPath := ""
+	flag.StringVar(&configPath, "c", "", "path to JSON config file")
+	flag.StringVar(&configPath, "config", "", "path to JSON config file")
 	flag.Parse()
 
 	setFlags := map[string]bool{}
@@ -44,63 +50,49 @@ func main() {
 		setFlags[f.Name] = true
 	})
 
-	finalAddr := defaultAddr
-	if envAddr := os.Getenv("ADDRESS"); envAddr != "" {
-		finalAddr = envAddr
-	} else if setFlags["a"] {
-		finalAddr = *addr
+	finalConfigPath := appconfig.ResolveString([]string{"CONFIG"}, setFlags["c"] || setFlags["config"], configPath, nil, "")
+	fileConfig, err := appconfig.LoadAgent(finalConfigPath)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	finalReportInterval := defaultReportInterval
-	if envReportInterval := os.Getenv("REPORT_INTERVAL"); envReportInterval != "" {
-		parsedReportInterval, err := strconv.Atoi(envReportInterval)
-		if err != nil {
-			log.Fatalf("invalid REPORT_INTERVAL value %q: %v", envReportInterval, err)
-		}
-		finalReportInterval = parsedReportInterval
-	} else if setFlags["r"] {
-		finalReportInterval = *reportInterval
+	finalAddr := appconfig.ResolveString([]string{"ADDRESS"}, setFlags["a"], *addr, fileConfig.Address, defaultAddr)
+
+	finalReportInterval, err := appconfig.ResolveSeconds([]string{"REPORT_INTERVAL"}, setFlags["r"], *reportInterval, fileConfig.ReportInterval, defaultReportInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if finalReportInterval <= 0 {
+		log.Fatalf("report interval must be positive, got %d", finalReportInterval)
 	}
 
-	finalPollInterval := defaultPollInterval
-	if envPollInterval := os.Getenv("POLL_INTERVAL"); envPollInterval != "" {
-		parsedPollInterval, err := strconv.Atoi(envPollInterval)
-		if err != nil {
-			log.Fatalf("invalid POLL_INTERVAL value %q: %v", envPollInterval, err)
-		}
-		finalPollInterval = parsedPollInterval
-	} else if setFlags["p"] {
-		finalPollInterval = *pollInterval
+	finalPollInterval, err := appconfig.ResolveSeconds([]string{"POLL_INTERVAL"}, setFlags["p"], *pollInterval, fileConfig.PollInterval, defaultPollInterval)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if finalPollInterval <= 0 {
+		log.Fatalf("poll interval must be positive, got %d", finalPollInterval)
 	}
 
-	finalRateLimit := defaultRateLimit
-	if envRateLimit := os.Getenv("RATE_LIMIT"); envRateLimit != "" {
-		parsedRateLimit, err := strconv.Atoi(envRateLimit)
-		if err != nil {
-			log.Fatalf("invalid RATE_LIMIT value %q: %v", envRateLimit, err)
-		}
-		finalRateLimit = parsedRateLimit
-	} else if setFlags["l"] {
-		finalRateLimit = *rateLimit
+	finalRateLimit, err := appconfig.ResolveInt([]string{"RATE_LIMIT"}, setFlags["l"], *rateLimit, fileConfig.RateLimit, defaultRateLimit)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	if finalRateLimit <= 0 {
 		log.Fatalf("rate limit must be positive, got %d", finalRateLimit)
 	}
 
-	finalKey := ""
-	if envKey := os.Getenv("KEY"); envKey != "" {
-		finalKey = envKey
-	} else if setFlags["k"] {
-		finalKey = *key
-	}
+	finalKey := appconfig.ResolveString([]string{"KEY"}, setFlags["k"], *key, fileConfig.Key, "")
+	finalCryptoKey := appconfig.ResolveString([]string{"CRYPTO_KEY"}, setFlags["crypto-key"], *cryptoKey, fileConfig.CryptoKey, "")
 
 	log.Printf(
-		"Agent started: addr=http://%s, report=%v, poll=%v, rate_limit=%v",
+		"Agent started: addr=http://%s, report=%v, poll=%v, rate_limit=%v, crypto=%t",
 		finalAddr,
 		finalReportInterval,
 		finalPollInterval,
 		finalRateLimit,
+		finalCryptoKey != "",
 	)
 
 	logger, err := zap.NewProduction()
@@ -114,9 +106,16 @@ func main() {
 	}()
 
 	a := agent.NewAgentWithRateLimit("http://"+finalAddr, finalReportInterval, finalPollInterval, finalRateLimit, finalKey)
+	if finalCryptoKey != "" {
+		publicKey, err := cryptoutil.LoadPublicKey(finalCryptoKey)
+		if err != nil {
+			log.Fatalf("cannot load public crypto key: %v", err)
+		}
+		a.SetEncryptionPublicKey(publicKey)
+	}
 	a.SetLogger(logger)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer stop()
 
 	a.Run(ctx)

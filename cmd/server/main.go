@@ -10,13 +10,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/AGubenskiy/metrics/internal/audit"
 	"github.com/AGubenskiy/metrics/internal/buildinfo"
+	appconfig "github.com/AGubenskiy/metrics/internal/config"
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
@@ -54,8 +54,12 @@ func main() {
 	restore := flag.Bool("r", defaultRestore, "restore metrics from file at startup")
 	databaseDSN := flag.String("d", defaultDatabaseDSN, "database connection DSN")
 	key := flag.String("k", "", "hash key")
+	cryptoKey := flag.String("crypto-key", "", "path to private crypto key")
 	auditFile := flag.String("audit-file", "", "path to audit log file")
 	auditURL := flag.String("audit-url", "", "audit receiver URL")
+	configPath := ""
+	flag.StringVar(&configPath, "c", "", "path to JSON config file")
+	flag.StringVar(&configPath, "config", "", "path to JSON config file")
 	flag.Parse()
 
 	setFlags := map[string]bool{}
@@ -63,9 +67,15 @@ func main() {
 		setFlags[f.Name] = true
 	})
 
-	finalAddr := resolveStringSetting("ADDRESS", setFlags["a"], *addr, defaultAddr)
+	finalConfigPath := appconfig.ResolveString([]string{"CONFIG"}, setFlags["c"] || setFlags["config"], configPath, nil, "")
+	fileConfig, err := appconfig.LoadServer(finalConfigPath)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	finalStoreInterval, err := resolveIntSetting("STORE_INTERVAL", setFlags["i"], *storeInterval, defaultStoreInterval)
+	finalAddr := appconfig.ResolveString([]string{"ADDRESS"}, setFlags["a"], *addr, fileConfig.Address, defaultAddr)
+
+	finalStoreInterval, err := appconfig.ResolveSeconds([]string{"STORE_INTERVAL"}, setFlags["i"], *storeInterval, fileConfig.StoreInterval, defaultStoreInterval)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -73,23 +83,31 @@ func main() {
 		log.Fatalf("store interval cannot be negative: %d", finalStoreInterval)
 	}
 
-	finalFileStoragePath := resolveStringSetting("FILE_STORAGE_PATH", setFlags["f"], *fileStoragePath, defaultFileStoragePath)
+	finalFileStoragePath := appconfig.ResolveString(
+		[]string{"STORE_FILE", "FILE_STORAGE_PATH"},
+		setFlags["f"],
+		*fileStoragePath,
+		fileConfig.StoreFileValue(),
+		defaultFileStoragePath,
+	)
 
-	finalRestore, err := resolveBoolSetting("RESTORE", setFlags["r"], *restore, defaultRestore)
+	finalRestore, err := appconfig.ResolveBool([]string{"RESTORE"}, setFlags["r"], *restore, fileConfig.Restore, defaultRestore)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	finalDatabaseDSN := resolveStringSetting("DATABASE_DSN", setFlags["d"], *databaseDSN, defaultDatabaseDSN)
-	finalKey := resolveStringSetting("KEY", setFlags["k"], *key, "")
-	finalAuditFile := resolveStringSetting("AUDIT_FILE", setFlags["audit-file"], *auditFile, "")
-	finalAuditURL := resolveStringSetting("AUDIT_URL", setFlags["audit-url"], *auditURL, "")
-	fileStorageConfigured := isNonEmptyEnv("FILE_STORAGE_PATH") ||
-		isNonEmptyEnv("STORE_INTERVAL") ||
-		isNonEmptyEnv("RESTORE") ||
+	finalDatabaseDSN := appconfig.ResolveString([]string{"DATABASE_DSN"}, setFlags["d"], *databaseDSN, fileConfig.DatabaseDSN, defaultDatabaseDSN)
+	finalKey := appconfig.ResolveString([]string{"KEY"}, setFlags["k"], *key, fileConfig.Key, "")
+	finalCryptoKey := appconfig.ResolveString([]string{"CRYPTO_KEY"}, setFlags["crypto-key"], *cryptoKey, fileConfig.CryptoKey, "")
+	finalAuditFile := appconfig.ResolveString([]string{"AUDIT_FILE"}, setFlags["audit-file"], *auditFile, fileConfig.AuditFile, "")
+	finalAuditURL := appconfig.ResolveString([]string{"AUDIT_URL"}, setFlags["audit-url"], *auditURL, fileConfig.AuditURL, "")
+	fileStorageConfigured := appconfig.HasNonEmptyEnv("STORE_FILE", "FILE_STORAGE_PATH") ||
+		appconfig.HasNonEmptyEnv("STORE_INTERVAL") ||
+		appconfig.HasNonEmptyEnv("RESTORE") ||
 		setFlags["f"] ||
 		setFlags["i"] ||
-		setFlags["r"]
+		setFlags["r"] ||
+		fileConfig.HasFileStorageSettings()
 
 	var (
 		store        service.Repository
@@ -169,6 +187,13 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
+	if finalCryptoKey != "" {
+		privateKey, err := cryptoutil.LoadPrivateKey(finalCryptoKey)
+		if err != nil {
+			log.Fatalf("cannot load private crypto key: %v", err)
+		}
+		r.Use(middleware.Decrypt(privateKey))
+	}
 	r.Use(middleware.Gzip)
 	r.Use(middleware.Hash(finalKey))
 	r.Post("/update/{type}/{name}/{value}", h.UpdateMetric)
@@ -183,13 +208,14 @@ func main() {
 	r.Get("/ping", h.Ping)
 
 	log.Printf(
-		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t, audit_file=%t, audit_url=%t)\n",
+		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t, crypto=%t, audit_file=%t, audit_url=%t)\n",
 		finalAddr,
 		storageMode,
 		finalStoreInterval,
 		finalFileStoragePath,
 		finalRestore,
 		finalDatabaseDSN != "",
+		finalCryptoKey != "",
 		finalAuditFile != "",
 		finalAuditURL != "",
 	)
@@ -199,7 +225,7 @@ func main() {
 		Handler: r,
 	}
 
-	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 	defer stopSignals()
 
 	serverErrCh := make(chan error, 1)
@@ -219,10 +245,7 @@ func main() {
 	case <-signalCtx.Done():
 		log.Printf("shutdown signal-stopping HTTP server")
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		if err := server.Shutdown(context.Background()); err != nil {
 			log.Printf("graceful shutdown failed: %v", err)
 		}
 	}
@@ -268,65 +291,6 @@ func setupFilePersistence(store *storage.MemStorage, storeInterval int, fileStor
 		}
 		log.Printf("metrics snapshot saved to %q", fileStoragePath)
 	}
-}
-
-func resolveStringSetting(envName string, flagSet bool, flagValue, defaultValue string) string {
-	if value, ok := getNonEmptyEnv(envName); ok {
-		return value
-	}
-	if flagSet {
-		trimmed := strings.TrimSpace(flagValue)
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-	return defaultValue
-}
-
-func resolveIntSetting(envName string, flagSet bool, flagValue, defaultValue int) (int, error) {
-	if value, ok := getNonEmptyEnv(envName); ok {
-		parsedValue, err := strconv.Atoi(value)
-		if err != nil {
-			return 0, errors.New("invalid " + envName + " value " + strconv.Quote(value) + ": " + err.Error())
-		}
-		return parsedValue, nil
-	}
-	if flagSet {
-		return flagValue, nil
-	}
-	return defaultValue, nil
-}
-
-func resolveBoolSetting(envName string, flagSet bool, flagValue, defaultValue bool) (bool, error) {
-	if value, ok := getNonEmptyEnv(envName); ok {
-		parsedValue, err := strconv.ParseBool(value)
-		if err != nil {
-			return false, errors.New("invalid " + envName + " value " + strconv.Quote(value) + ": " + err.Error())
-		}
-		return parsedValue, nil
-	}
-	if flagSet {
-		return flagValue, nil
-	}
-	return defaultValue, nil
-}
-
-func isNonEmptyEnv(envName string) bool {
-	_, ok := getNonEmptyEnv(envName)
-	return ok
-}
-
-func getNonEmptyEnv(envName string) (string, bool) {
-	value, ok := os.LookupEnv(envName)
-	if !ok {
-		return "", false
-	}
-
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", false
-	}
-	return trimmed, true
 }
 
 func buildAuditPublisher(auditFilePath, auditURL string) (handler.AuditPublisher, func(context.Context) error, error) {

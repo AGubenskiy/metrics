@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"fmt"
-	models "github.com/AGubenskiy/metrics/internal/model"
-	"github.com/AGubenskiy/metrics/internal/signing"
-	gojson "github.com/goccy/go-json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
+	models "github.com/AGubenskiy/metrics/internal/model"
+	"github.com/AGubenskiy/metrics/internal/signing"
+	gojson "github.com/goccy/go-json"
 	"github.com/shirou/gopsutil/v3/mem"
 )
 
@@ -312,6 +315,127 @@ func TestReportWithWorkerPoolRespectsRateLimit(t *testing.T) {
 	}
 }
 
+func TestRunSendsPendingMetricsOnShutdown(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		metrics []models.Metrics
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/updates/" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		defer func() {
+			_ = r.Body.Close()
+		}()
+
+		gzipReader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer func() {
+			_ = gzipReader.Close()
+		}()
+
+		var batch []models.Metrics
+		if err = gojson.NewDecoder(gzipReader).Decode(&batch); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		mu.Lock()
+		metrics = append(metrics, batch...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 3600, 3600, "")
+	a.readMemStats = func(stats *runtime.MemStats) {
+		stats.Alloc = 42
+	}
+	a.poll()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a.Run(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, metric := range metrics {
+		if metric.ID == "PollCount" && metric.MType == models.Counter && metric.Delta != nil && *metric.Delta == 1 {
+			return
+		}
+	}
+	t.Fatalf("expected pending PollCount metric to be sent on shutdown, got %+v", metrics)
+}
+
+func TestRunDoesNotResendAlreadyReportedMetricsOnShutdown(t *testing.T) {
+	var batchRequests int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/updates/" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		atomic.AddInt32(&batchRequests, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 3600, 3600, "")
+	a.readMemStats = func(stats *runtime.MemStats) {
+		stats.Alloc = 42
+	}
+	a.poll()
+	runReportWithWorkerPool(t, a)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a.Run(ctx)
+
+	if got := atomic.LoadInt32(&batchRequests); got != 1 {
+		t.Fatalf("expected already reported metrics not to be resent on shutdown, got %d batch requests", got)
+	}
+}
+
+func TestRunRetriesPendingMetricsAfterFailedReportOnShutdown(t *testing.T) {
+	var batchRequests int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/updates/" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+
+		requestNumber := atomic.AddInt32(&batchRequests, 1)
+		if requestNumber == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 3600, 3600, "")
+	a.readMemStats = func(stats *runtime.MemStats) {
+		stats.Alloc = 42
+	}
+	a.poll()
+	runReportWithWorkerPool(t, a)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a.Run(ctx)
+
+	if got := atomic.LoadInt32(&batchRequests); got != 2 {
+		t.Fatalf("expected failed report to be retried on shutdown, got %d batch requests", got)
+	}
+}
+
 func TestSendCompressedJSONWithRetry_RetriesTemporaryNetworkErrors(t *testing.T) {
 	attempts := 0
 
@@ -417,6 +541,60 @@ func TestReportSignsRequestBodyWhenKeyConfigured(t *testing.T) {
 	}
 }
 
+func TestReportEncryptsRequestBodyWhenPublicKeyConfigured(t *testing.T) {
+	privateKey := generateAgentTestPrivateKey(t)
+	var decryptedBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(cryptoutil.HeaderName); got != cryptoutil.HeaderValue {
+			t.Fatalf("expected %s %q, got %q", cryptoutil.HeaderName, cryptoutil.HeaderValue, got)
+		}
+
+		encryptedBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read encrypted body: %v", err)
+		}
+		if bytes.Contains(encryptedBody, []byte("Alloc")) {
+			t.Fatalf("encrypted body contains plaintext metric name")
+		}
+
+		compressedBody, err := cryptoutil.Decrypt(encryptedBody, privateKey)
+		if err != nil {
+			t.Fatalf("failed to decrypt body: %v", err)
+		}
+		gzipReader, err := gzip.NewReader(bytes.NewReader(compressedBody))
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer func() {
+			_ = gzipReader.Close()
+		}()
+
+		decryptedBody, err = io.ReadAll(gzipReader)
+		if err != nil {
+			t.Fatalf("failed to read decrypted body: %v", err)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 10, 5, "")
+	a.SetEncryptionPublicKey(&privateKey.PublicKey)
+	value := 3.14
+	a.gauges["Alloc"] = value
+
+	runReportWithWorkerPool(t, a)
+
+	var batch []models.Metrics
+	if err := gojson.Unmarshal(decryptedBody, &batch); err != nil {
+		t.Fatalf("failed to decode decrypted JSON: %v", err)
+	}
+	if len(batch) != 1 || batch[0].ID != "Alloc" {
+		t.Fatalf("unexpected decrypted metrics batch: %+v", batch)
+	}
+}
+
 func TestPollUsesInjectedRuntimeReader(t *testing.T) {
 	a := NewAgent("http://localhost:8080", 10, 5, "")
 	a.readMemStats = func(stats *runtime.MemStats) {
@@ -455,4 +633,14 @@ func (temporaryNetError) Timeout() bool {
 
 func (temporaryNetError) Temporary() bool {
 	return true
+}
+
+func generateAgentTestPrivateKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+	return privateKey
 }

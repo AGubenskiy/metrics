@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,15 +14,15 @@ import (
 	"testing"
 
 	"github.com/AGubenskiy/metrics/internal/audit"
+	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	"github.com/AGubenskiy/metrics/internal/middleware"
 	models "github.com/AGubenskiy/metrics/internal/model"
 	"github.com/AGubenskiy/metrics/internal/service"
 	"github.com/AGubenskiy/metrics/internal/signing"
+	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	gojson "github.com/goccy/go-json"
 	gomock "go.uber.org/mock/gomock"
-
-	"github.com/AGubenskiy/metrics/internal/storage"
 )
 
 func setupRouter() http.Handler {
@@ -60,6 +62,20 @@ func setupRouterWithKey(key string) http.Handler {
 	r.Post("/value/", h.GetMetricValueJSON)
 	r.Get("/", h.GetAllMetrics)
 	r.Get("/ping", h.Ping)
+
+	return r
+}
+
+func setupRouterWithCryptoAndKey(privateKey *rsa.PrivateKey, key string) http.Handler {
+	store := storage.NewMemStorage()
+	h := NewHandler(service.NewMetrics(store))
+
+	r := chi.NewRouter()
+	r.Use(middleware.Decrypt(privateKey))
+	r.Use(middleware.Gzip)
+	r.Use(middleware.Hash(key))
+	r.Post("/update", h.UpdateMetricJSON)
+	r.Post("/value", h.GetMetricValueJSON)
 
 	return r
 }
@@ -384,6 +400,70 @@ func TestUpdateMetricJSONAcceptsValidHash(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+}
+
+func TestUpdateMetricJSONWithEncryptedGzipBodyAndHash(t *testing.T) {
+	privateKey := generateHandlerTestPrivateKey(t)
+	router := setupRouterWithCryptoAndKey(privateKey, "test-key")
+
+	gaugeValue := 7.7
+	body, err := gojson.Marshal(models.Metrics{
+		ID:    "encryptedGauge",
+		MType: models.Gauge,
+		Value: &gaugeValue,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+
+	encryptedBody, err := cryptoutil.Encrypt(gzipBytes(t, body), &privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("failed to encrypt request body: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(encryptedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set(cryptoutil.HeaderName, cryptoutil.HeaderValue)
+	req.Header.Set(signing.HeaderName, signing.Hash(body, "test-key"))
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	valueBody, _ := gojson.Marshal(models.Metrics{
+		ID:    "encryptedGauge",
+		MType: models.Gauge,
+	})
+	valueReq := httptest.NewRequest(http.MethodPost, "/value", bytes.NewReader(valueBody))
+	valueReq.Header.Set("Content-Type", "application/json")
+	valueRR := httptest.NewRecorder()
+
+	router.ServeHTTP(valueRR, valueReq)
+
+	if valueRR.Code != http.StatusOK {
+		t.Fatalf("expected value status %d, got %d", http.StatusOK, valueRR.Code)
+	}
+}
+
+func TestUpdateMetricJSONRejectsInvalidEncryptedBody(t *testing.T) {
+	privateKey := generateHandlerTestPrivateKey(t)
+	router := setupRouterWithCryptoAndKey(privateKey, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader([]byte("invalid")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set(cryptoutil.HeaderName, cryptoutil.HeaderValue)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
 	}
 }
 
@@ -731,4 +811,14 @@ func gunzipBytes(t *testing.T, body []byte) []byte {
 	}
 
 	return decoded
+}
+
+func generateHandlerTestPrivateKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+	return privateKey
 }
