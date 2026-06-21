@@ -22,6 +22,7 @@ import (
 	models "github.com/AGubenskiy/metrics/internal/model"
 	pb "github.com/AGubenskiy/metrics/internal/proto"
 	"github.com/AGubenskiy/metrics/internal/signing"
+	"github.com/AGubenskiy/metrics/internal/trustedsubnet"
 	gojson "github.com/goccy/go-json"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -59,7 +60,7 @@ type Agent struct {
 	reportedVersion atomic.Uint64
 }
 
-const realIPHeader = "X-Real-IP"
+const realIPHeader = trustedsubnet.RealIPHeader
 const grpcRequestTimeout = 5 * time.Second
 
 // NewAgent creates an agent with single-request reporting mode.
@@ -518,7 +519,7 @@ func (a *Agent) updateMetricsGRPC(req *pb.UpdateMetricsRequest) error {
 	defer cancel()
 
 	if a.realIP != "" {
-		ctx = metadata.AppendToOutgoingContext(ctx, strings.ToLower(realIPHeader), a.realIP)
+		ctx = metadata.AppendToOutgoingContext(ctx, trustedsubnet.RealIPMetadataKey, a.realIP)
 	}
 
 	_, err := a.grpcClient.UpdateMetrics(ctx, req)

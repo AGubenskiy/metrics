@@ -1,28 +1,26 @@
 package middleware
 
 import (
-	"fmt"
-	"net"
 	"net/http"
 	"strings"
+
+	"github.com/AGubenskiy/metrics/internal/trustedsubnet"
 )
 
-const realIPHeader = "X-Real-IP"
+const realIPHeader = trustedsubnet.RealIPHeader
 
 // TrustedSubnet allows requests whose X-Real-IP belongs to cidr.
 // If cidr is empty, the middleware is disabled. Optional path prefixes limit
 // the check to selected endpoints.
 func TrustedSubnet(cidr string, pathPrefixes ...string) (func(http.Handler) http.Handler, error) {
-	cidr = strings.TrimSpace(cidr)
-	if cidr == "" {
+	checker, err := trustedsubnet.NewChecker(cidr)
+	if err != nil {
+		return nil, err
+	}
+	if !checker.Enabled() {
 		return func(next http.Handler) http.Handler {
 			return next
 		}, nil
-	}
-
-	_, subnet, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid trusted_subnet %q: %w", cidr, err)
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -32,8 +30,7 @@ func TrustedSubnet(cidr string, pathPrefixes ...string) (func(http.Handler) http
 				return
 			}
 
-			ip := net.ParseIP(strings.TrimSpace(r.Header.Get(realIPHeader)))
-			if ip == nil || !subnet.Contains(ip) {
+			if !checker.Allows(r.Header.Get(realIPHeader)) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
