@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -182,6 +183,28 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 
 	if !foundGauge || !foundCounter {
 		t.Fatalf("sent metrics mismatch: %+v", metrics)
+	}
+}
+
+func TestReportSetsRealIPHeader(t *testing.T) {
+	var gotRealIP string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRealIP = r.Header.Get(realIPHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 10, 5, "")
+	a.gauges["Alloc"] = 1
+
+	runReportWithWorkerPool(t, a)
+
+	if gotRealIP == "" {
+		t.Fatalf("expected %s header to be set", realIPHeader)
+	}
+	if ip := net.ParseIP(gotRealIP); ip == nil {
+		t.Fatalf("expected %s header to contain IP address, got %q", realIPHeader, gotRealIP)
 	}
 }
 

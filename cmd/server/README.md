@@ -60,6 +60,7 @@ GET /ping
 | -d |	DSN подключения к PostgreSQL	| "" |
 | -k |	Ключ для HMAC-проверки тела запроса	| "" |
 | -crypto-key |	Путь к PEM-файлу с приватным ключом для расшифровки запросов агента	| "" |
+| -t |	Доверенная подсеть агентов в CIDR-нотации	| "" |
 | -audit-file |	Путь к файлу audit-лога	| "" |
 | -audit-url |	URL получателя audit-событий	| "" |
 | -c, -config |	Путь к JSON-файлу конфигурации	| "" |
@@ -72,6 +73,7 @@ GET /ping
 - `DATABASE_DSN` (имеет приоритет над `-d`)
 - `KEY`
 - `CRYPTO_KEY` — путь к PEM-файлу с приватным ключом
+- `TRUSTED_SUBNET` — доверенная подсеть агентов в CIDR-нотации
 - `AUDIT_FILE`
 - `AUDIT_URL`
 - `CONFIG` — путь к JSON-файлу конфигурации
@@ -88,6 +90,7 @@ GET /ping
   "database_dsn": "",
   "key": "",
   "crypto_key": "/path/to/private.pem",
+  "trusted_subnet": "",
   "audit_file": "",
   "audit_url": ""
 }

@@ -83,6 +83,7 @@ type Server struct {
 	DatabaseDSN     *string          `json:"database_dsn"`
 	Key             *string          `json:"key"`
 	CryptoKey       *string          `json:"crypto_key"`
+	TrustedSubnet   *string          `json:"trusted_subnet"`
 	AuditFile       *string          `json:"audit_file"`
 	AuditURL        *string          `json:"audit_url"`
 }

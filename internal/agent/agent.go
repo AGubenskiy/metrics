@@ -47,11 +47,14 @@ type Agent struct {
 	readMemStats      func(*runtime.MemStats)
 	readVirtualMemory func() (*mem.VirtualMemoryStat, error)
 	readCPUPercent    func() ([]float64, error)
+	realIP            string
 
 	batchDisabled   atomic.Bool
 	metricsVersion  atomic.Uint64
 	reportedVersion atomic.Uint64
 }
+
+const realIPHeader = "X-Real-IP"
 
 // NewAgent creates an agent with single-request reporting mode.
 func NewAgent(serverAddr string, reportInterval int, pollInterval int, key string) *Agent {
@@ -85,6 +88,7 @@ func NewAgentWithRateLimit(serverAddr string, reportInterval int, pollInterval i
 		readCPUPercent: func() ([]float64, error) {
 			return cpu.Percent(0, true)
 		},
+		realIP: detectHostIP(serverAddr),
 	}
 }
 
@@ -495,6 +499,7 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set(realIPHeader, a.realIP)
 	if encrypted {
 		req.Header.Set(cryptoutil.HeaderName, cryptoutil.HeaderValue)
 	}
@@ -614,6 +619,118 @@ func isRetriableAgentError(err error) bool {
 	}
 
 	return false
+}
+
+func detectHostIP(serverAddr string) string {
+	if ip := localIPForServer(serverAddr); ip != "" {
+		return ip
+	}
+	if ip := interfaceIP(false); ip != "" {
+		return ip
+	}
+	if ip := interfaceIP(true); ip != "" {
+		return ip
+	}
+	return "127.0.0.1"
+}
+
+func localIPForServer(serverAddr string) string {
+	parsedURL, err := url.Parse(strings.TrimSpace(serverAddr))
+	if err != nil {
+		return ""
+	}
+
+	host := parsedURL.Hostname()
+	if host == "" {
+		return ""
+	}
+	if strings.EqualFold(host, "localhost") {
+		return "127.0.0.1"
+	}
+
+	targetIP := net.ParseIP(host)
+	if targetIP == nil {
+		return ""
+	}
+	if targetIP.IsLoopback() {
+		return normalizedIPString(targetIP)
+	}
+
+	port := parsedURL.Port()
+	if port == "" {
+		port = defaultPort(parsedURL.Scheme)
+	}
+
+	conn, err := net.DialTimeout("udp", net.JoinHostPort(targetIP.String(), port), 100*time.Millisecond)
+	if err != nil {
+		return ""
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	udpAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || udpAddr.IP == nil {
+		return ""
+	}
+	return normalizedIPString(udpAddr.IP)
+}
+
+func defaultPort(scheme string) string {
+	if strings.EqualFold(scheme, "https") {
+		return "443"
+	}
+	return "80"
+}
+
+func interfaceIP(allowLoopback bool) string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP == nil {
+			continue
+		}
+
+		ip := ipNet.IP
+		if ip.IsLoopback() != allowLoopback {
+			continue
+		}
+		if !allowLoopback && !ip.IsGlobalUnicast() {
+			continue
+		}
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4.String()
+		}
+	}
+
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP == nil {
+			continue
+		}
+
+		ip := ipNet.IP
+		if ip.IsLoopback() != allowLoopback {
+			continue
+		}
+		if !allowLoopback && !ip.IsGlobalUnicast() {
+			continue
+		}
+		return ip.String()
+	}
+
+	return ""
+}
+
+func normalizedIPString(ip net.IP) string {
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4.String()
+	}
+	return ip.String()
 }
 
 type sendJob struct {

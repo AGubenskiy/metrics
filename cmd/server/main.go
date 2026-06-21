@@ -55,6 +55,7 @@ func main() {
 	databaseDSN := flag.String("d", defaultDatabaseDSN, "database connection DSN")
 	key := flag.String("k", "", "hash key")
 	cryptoKey := flag.String("crypto-key", "", "path to private crypto key")
+	trustedSubnet := flag.String("t", "", "trusted subnet in CIDR notation")
 	auditFile := flag.String("audit-file", "", "path to audit log file")
 	auditURL := flag.String("audit-url", "", "audit receiver URL")
 	configPath := ""
@@ -99,6 +100,7 @@ func main() {
 	finalDatabaseDSN := appconfig.ResolveString([]string{"DATABASE_DSN"}, setFlags["d"], *databaseDSN, fileConfig.DatabaseDSN, defaultDatabaseDSN)
 	finalKey := appconfig.ResolveString([]string{"KEY"}, setFlags["k"], *key, fileConfig.Key, "")
 	finalCryptoKey := appconfig.ResolveString([]string{"CRYPTO_KEY"}, setFlags["crypto-key"], *cryptoKey, fileConfig.CryptoKey, "")
+	finalTrustedSubnet := appconfig.ResolveString([]string{"TRUSTED_SUBNET"}, setFlags["t"], *trustedSubnet, fileConfig.TrustedSubnet, "")
 	finalAuditFile := appconfig.ResolveString([]string{"AUDIT_FILE"}, setFlags["audit-file"], *auditFile, fileConfig.AuditFile, "")
 	finalAuditURL := appconfig.ResolveString([]string{"AUDIT_URL"}, setFlags["audit-url"], *auditURL, fileConfig.AuditURL, "")
 	fileStorageConfigured := appconfig.HasNonEmptyEnv("STORE_FILE", "FILE_STORAGE_PATH") ||
@@ -108,6 +110,11 @@ func main() {
 		setFlags["i"] ||
 		setFlags["r"] ||
 		fileConfig.HasFileStorageSettings()
+
+	trustedSubnetMiddleware, err := middleware.TrustedSubnet(finalTrustedSubnet, "/update", "/updates")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	var (
 		store        service.Repository
@@ -187,6 +194,7 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
+	r.Use(trustedSubnetMiddleware)
 	if finalCryptoKey != "" {
 		privateKey, err := cryptoutil.LoadPrivateKey(finalCryptoKey)
 		if err != nil {
@@ -208,7 +216,7 @@ func main() {
 	r.Get("/ping", h.Ping)
 
 	log.Printf(
-		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t, crypto=%t, audit_file=%t, audit_url=%t)\n",
+		"Server started on http://%s (mode=%s, store_interval=%ds, file=%s, restore=%t, db=%t, crypto=%t, trusted_subnet=%t, audit_file=%t, audit_url=%t)\n",
 		finalAddr,
 		storageMode,
 		finalStoreInterval,
@@ -216,6 +224,7 @@ func main() {
 		finalRestore,
 		finalDatabaseDSN != "",
 		finalCryptoKey != "",
+		finalTrustedSubnet != "",
 		finalAuditFile != "",
 		finalAuditURL != "",
 	)

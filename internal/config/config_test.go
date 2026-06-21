@@ -16,6 +16,7 @@ func TestLoadServerConfig(t *testing.T) {
 		"database_dsn": "postgres://user:pass@localhost:5432/metrics",
 		"key": "secret",
 		"crypto_key": "/tmp/private.pem",
+		"trusted_subnet": "192.168.0.0/24",
 		"audit_file": "/tmp/audit.log",
 		"audit_url": "http://localhost:9091/audit"
 	}`)
@@ -52,6 +53,9 @@ func TestLoadServerConfig(t *testing.T) {
 	}
 	if cfg.CryptoKey == nil || *cfg.CryptoKey != "/tmp/private.pem" {
 		t.Fatalf("unexpected crypto key: %v", cfg.CryptoKey)
+	}
+	if cfg.TrustedSubnet == nil || *cfg.TrustedSubnet != "192.168.0.0/24" {
+		t.Fatalf("unexpected trusted subnet: %v", cfg.TrustedSubnet)
 	}
 	if cfg.AuditFile == nil || *cfg.AuditFile != "/tmp/audit.log" {
 		t.Fatalf("unexpected audit file: %v", cfg.AuditFile)
