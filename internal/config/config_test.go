@@ -10,6 +10,7 @@ func TestLoadServerConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.json")
 	data := []byte(`{
 		"address": "localhost:9090",
+		"grpc_address": "localhost:9091",
 		"restore": false,
 		"store_interval": "1s",
 		"store_file": "/tmp/metrics.json",
@@ -32,6 +33,9 @@ func TestLoadServerConfig(t *testing.T) {
 
 	if cfg.Address == nil || *cfg.Address != "localhost:9090" {
 		t.Fatalf("unexpected address: %v", cfg.Address)
+	}
+	if cfg.GRPCAddress == nil || *cfg.GRPCAddress != "localhost:9091" {
+		t.Fatalf("unexpected gRPC address: %v", cfg.GRPCAddress)
 	}
 	if cfg.Restore == nil || *cfg.Restore {
 		t.Fatalf("unexpected restore: %v", cfg.Restore)
@@ -69,6 +73,7 @@ func TestLoadAgentConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
 	data := []byte(`{
 		"address": "localhost:9090",
+		"grpc_address": "localhost:9091",
 		"report_interval": "3s",
 		"poll_interval": 2,
 		"rate_limit": 4,
@@ -87,6 +92,9 @@ func TestLoadAgentConfig(t *testing.T) {
 
 	if cfg.Address == nil || *cfg.Address != "localhost:9090" {
 		t.Fatalf("unexpected address: %v", cfg.Address)
+	}
+	if cfg.GRPCAddress == nil || *cfg.GRPCAddress != "localhost:9091" {
+		t.Fatalf("unexpected gRPC address: %v", cfg.GRPCAddress)
 	}
 	if cfg.ReportInterval == nil || cfg.ReportInterval.Int() != 3 {
 		t.Fatalf("unexpected report interval: %v", cfg.ReportInterval)

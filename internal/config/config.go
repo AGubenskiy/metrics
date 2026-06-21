@@ -76,6 +76,7 @@ func (d DurationSeconds) Int() int {
 
 type Server struct {
 	Address         *string          `json:"address"`
+	GRPCAddress     *string          `json:"grpc_address"`
 	Restore         *bool            `json:"restore"`
 	StoreInterval   *DurationSeconds `json:"store_interval"`
 	StoreFile       *string          `json:"store_file"`
@@ -104,6 +105,7 @@ func (c Server) HasFileStorageSettings() bool {
 
 type Agent struct {
 	Address        *string          `json:"address"`
+	GRPCAddress    *string          `json:"grpc_address"`
 	ReportInterval *DurationSeconds `json:"report_interval"`
 	PollInterval   *DurationSeconds `json:"poll_interval"`
 	RateLimit      *int             `json:"rate_limit"`

@@ -7,12 +7,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/AGubenskiy/metrics/internal/agent"
 	"github.com/AGubenskiy/metrics/internal/buildinfo"
 	appconfig "github.com/AGubenskiy/metrics/internal/config"
 	"github.com/AGubenskiy/metrics/internal/cryptoutil"
+	pb "github.com/AGubenskiy/metrics/internal/proto"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
@@ -28,6 +32,7 @@ func main() {
 
 	const (
 		defaultAddr           = "localhost:8080"
+		defaultGRPCAddr       = ""
 		defaultReportInterval = 10
 		defaultPollInterval   = 2
 		defaultRateLimit      = 1
@@ -35,6 +40,8 @@ func main() {
 
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	addr := flag.String("a", defaultAddr, "server address")
+	grpcAddr := flag.String("grpc-a", defaultGRPCAddr, "gRPC server address")
+	flag.StringVar(grpcAddr, "grpc-address", defaultGRPCAddr, "gRPC server address")
 	reportInterval := flag.Int("r", defaultReportInterval, "report interval in seconds")
 	pollInterval := flag.Int("p", defaultPollInterval, "poll interval in seconds")
 	rateLimit := flag.Int("l", defaultRateLimit, "max out requests")
@@ -57,6 +64,13 @@ func main() {
 	}
 
 	finalAddr := appconfig.ResolveString([]string{"ADDRESS"}, setFlags["a"], *addr, fileConfig.Address, defaultAddr)
+	finalGRPCAddr := appconfig.ResolveString(
+		[]string{"GRPC_ADDRESS"},
+		setFlags["grpc-a"] || setFlags["grpc-address"],
+		*grpcAddr,
+		fileConfig.GRPCAddress,
+		defaultGRPCAddr,
+	)
 
 	finalReportInterval, err := appconfig.ResolveSeconds([]string{"REPORT_INTERVAL"}, setFlags["r"], *reportInterval, fileConfig.ReportInterval, defaultReportInterval)
 	if err != nil {
@@ -87,8 +101,9 @@ func main() {
 	finalCryptoKey := appconfig.ResolveString([]string{"CRYPTO_KEY"}, setFlags["crypto-key"], *cryptoKey, fileConfig.CryptoKey, "")
 
 	log.Printf(
-		"Agent started: addr=http://%s, report=%v, poll=%v, rate_limit=%v, crypto=%t",
+		"Agent started: addr=http://%s, grpc_addr=%s, report=%v, poll=%v, rate_limit=%v, crypto=%t",
 		finalAddr,
+		finalGRPCAddr,
 		finalReportInterval,
 		finalPollInterval,
 		finalRateLimit,
@@ -106,6 +121,25 @@ func main() {
 	}()
 
 	a := agent.NewAgentWithRateLimit("http://"+finalAddr, finalReportInterval, finalPollInterval, finalRateLimit, finalKey)
+	if finalGRPCAddr != "" {
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		grpcConn, err := grpc.DialContext(
+			dialCtx,
+			finalGRPCAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+		)
+		dialCancel()
+		if err != nil {
+			log.Fatalf("cannot connect to gRPC server: %v", err)
+		}
+		defer func() {
+			if closeErr := grpcConn.Close(); closeErr != nil {
+				log.Printf("cannot close gRPC connection: %v", closeErr)
+			}
+		}()
+		a.SetGRPCClient(pb.NewMetricsClient(grpcConn), finalGRPCAddr)
+	}
 	if finalCryptoKey != "" {
 		publicKey, err := cryptoutil.LoadPublicKey(finalCryptoKey)
 		if err != nil {

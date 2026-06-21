@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,15 +18,18 @@ import (
 	"github.com/AGubenskiy/metrics/internal/buildinfo"
 	appconfig "github.com/AGubenskiy/metrics/internal/config"
 	"github.com/AGubenskiy/metrics/internal/cryptoutil"
+	"github.com/AGubenskiy/metrics/internal/grpcmetrics"
 	"github.com/AGubenskiy/metrics/internal/handler"
 	loggerMiddleware "github.com/AGubenskiy/metrics/internal/logger"
 	"github.com/AGubenskiy/metrics/internal/middleware"
+	pb "github.com/AGubenskiy/metrics/internal/proto"
 	"github.com/AGubenskiy/metrics/internal/repository"
 	"github.com/AGubenskiy/metrics/internal/service"
 	"github.com/AGubenskiy/metrics/internal/storage"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -41,6 +45,7 @@ func main() {
 
 	const (
 		defaultAddr          = "localhost:8080"
+		defaultGRPCAddr      = ""
 		defaultStoreInterval = 300
 		defaultRestore       = true
 		defaultDatabaseDSN   = ""
@@ -49,6 +54,8 @@ func main() {
 
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	addr := flag.String("a", defaultAddr, "HTTP server address")
+	grpcAddr := flag.String("grpc-a", defaultGRPCAddr, "gRPC server address")
+	flag.StringVar(grpcAddr, "grpc-address", defaultGRPCAddr, "gRPC server address")
 	storeInterval := flag.Int("i", defaultStoreInterval, "store interval in seconds")
 	fileStoragePath := flag.String("f", defaultFileStoragePath, "file storage path")
 	restore := flag.Bool("r", defaultRestore, "restore metrics from file at startup")
@@ -75,6 +82,13 @@ func main() {
 	}
 
 	finalAddr := appconfig.ResolveString([]string{"ADDRESS"}, setFlags["a"], *addr, fileConfig.Address, defaultAddr)
+	finalGRPCAddr := appconfig.ResolveString(
+		[]string{"GRPC_ADDRESS"},
+		setFlags["grpc-a"] || setFlags["grpc-address"],
+		*grpcAddr,
+		fileConfig.GRPCAddress,
+		defaultGRPCAddr,
+	)
 
 	finalStoreInterval, err := appconfig.ResolveSeconds([]string{"STORE_INTERVAL"}, setFlags["i"], *storeInterval, fileConfig.StoreInterval, defaultStoreInterval)
 	if err != nil {
@@ -168,6 +182,16 @@ func main() {
 	defer stopAndFlush()
 
 	metricsService := service.NewMetrics(store)
+	grpcServer, grpcErrCh, err := startGRPCServer(finalGRPCAddr, finalTrustedSubnet, metricsService)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if grpcServer != nil {
+			grpcServer.Stop()
+		}
+	}()
+
 	auditPublisher, stopAudit, err := buildAuditPublisher(finalAuditFile, finalAuditURL)
 	if err != nil {
 		log.Fatal(err)
@@ -228,6 +252,9 @@ func main() {
 		finalAuditFile != "",
 		finalAuditURL != "",
 	)
+	if finalGRPCAddr != "" {
+		log.Printf("gRPC server started on %s", finalGRPCAddr)
+	}
 
 	server := &http.Server{
 		Addr:    finalAddr,
@@ -251,12 +278,68 @@ func main() {
 		if err != nil {
 			log.Printf("server stopped with error: %v", err)
 		}
+	case err := <-grpcErrCh:
+		if err != nil {
+			log.Printf("gRPC server stopped with error: %v", err)
+		}
 	case <-signalCtx.Done():
 		log.Printf("shutdown signal-stopping HTTP server")
 
-		if err := server.Shutdown(context.Background()); err != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Printf("graceful shutdown failed: %v", err)
 		}
+		shutdownGRPCServer(grpcServer, 5*time.Second)
+	}
+}
+
+func startGRPCServer(addr, trustedSubnet string, metricsService grpcmetrics.MetricsService) (*grpc.Server, <-chan error, error) {
+	if addr == "" {
+		return nil, nil, nil
+	}
+
+	trustedSubnetInterceptor, err := grpcmetrics.TrustedSubnetUnaryInterceptor(trustedSubnet)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	server := grpc.NewServer(grpc.UnaryInterceptor(trustedSubnetInterceptor))
+	pb.RegisterMetricsServer(server, grpcmetrics.NewServer(metricsService))
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := server.Serve(listener)
+		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	return server, errCh, nil
+}
+
+func shutdownGRPCServer(server *grpc.Server, timeout time.Duration) {
+	if server == nil {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		server.GracefulStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		server.Stop()
 	}
 }
 
