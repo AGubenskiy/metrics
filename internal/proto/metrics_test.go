@@ -7,12 +7,12 @@ import (
 )
 
 func TestUpdateMetricsRequestProtoRoundTrip(t *testing.T) {
-	in := &UpdateMetricsRequest{
+	in := UpdateMetricsRequest_builder{
 		Metrics: []*Metric{
-			{Id: "Alloc", Type: Metric_GAUGE, Value: 12.5},
-			{Id: "PollCount", Type: Metric_COUNTER, Delta: 3},
+			Metric_builder{Id: "Alloc", Type: Metric_GAUGE, Value: 12.5}.Build(),
+			Metric_builder{Id: "PollCount", Type: Metric_COUNTER, Delta: 3}.Build(),
 		},
-	}
+	}.Build()
 
 	data, err := goproto.Marshal(in)
 	if err != nil {

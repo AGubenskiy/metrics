@@ -41,6 +41,7 @@ http://localhost:8080
 |-l	 |Максимальное число одновременных исходящих запросов|	1|
 |-k	 |Ключ для HMAC-подписи тела запроса|	""|
 |-crypto-key	 |Путь к PEM-файлу с публичным ключом для шифрования запросов|	""|
+|-grpc-cert-file	 |Путь к PEM-файлу сертификата/CA для проверки TLS gRPC-сервера|	""|
 |-c, -config	 |Путь к JSON-файлу конфигурации|	""|
 
 Переменные окружения имеют приоритет над флагами:
@@ -51,6 +52,7 @@ http://localhost:8080
 - `RATE_LIMIT`
 - `KEY`
 - `CRYPTO_KEY` — путь к PEM-файлу с публичным ключом
+- `GRPC_CERT_FILE` — путь к PEM-файлу сертификата/CA для проверки TLS gRPC-сервера
 - `CONFIG` — путь к JSON-файлу конфигурации
 
 Значения применяются в порядке приоритета: переменные окружения, флаги, JSON-файл, значения по умолчанию.
@@ -64,7 +66,8 @@ http://localhost:8080
   "poll_interval": "1s",
   "rate_limit": 1,
   "key": "",
-  "crypto_key": "/path/to/public.pem"
+  "crypto_key": "/path/to/public.pem",
+  "grpc_cert_file": "/path/to/grpc-cert.pem"
 }
 ```
 
@@ -78,3 +81,10 @@ http://localhost:8080
 openssl genrsa -out private.pem 2048
 openssl rsa -in private.pem -pubout -out public.pem
 ````
+
+### Пример генерации самоподписанного сертификата для gRPC TLS:
+````
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 -keyout grpc-key.pem -out grpc-cert.pem -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+````
+
+При использовании gRPC агенту нужно передать `grpc-cert.pem` через `-grpc-cert-file`, `GRPC_CERT_FILE` или поле JSON-конфигурации `grpc_cert_file`.

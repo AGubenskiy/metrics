@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -16,7 +17,8 @@ import (
 	pb "github.com/AGubenskiy/metrics/internal/proto"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
 )
 
 var (
@@ -47,6 +49,7 @@ func main() {
 	rateLimit := flag.Int("l", defaultRateLimit, "max out requests")
 	key := flag.String("k", "", "hash key")
 	cryptoKey := flag.String("crypto-key", "", "path to public crypto key")
+	grpcCertFile := flag.String("grpc-cert-file", "", "path to trusted gRPC server TLS certificate or CA bundle")
 	configPath := ""
 	flag.StringVar(&configPath, "c", "", "path to JSON config file")
 	flag.StringVar(&configPath, "config", "", "path to JSON config file")
@@ -99,15 +102,17 @@ func main() {
 
 	finalKey := appconfig.ResolveString([]string{"KEY"}, setFlags["k"], *key, fileConfig.Key, "")
 	finalCryptoKey := appconfig.ResolveString([]string{"CRYPTO_KEY"}, setFlags["crypto-key"], *cryptoKey, fileConfig.CryptoKey, "")
+	finalGRPCCertFile := appconfig.ResolveString([]string{"GRPC_CERT_FILE"}, setFlags["grpc-cert-file"], *grpcCertFile, fileConfig.GRPCCertFile, "")
 
 	log.Printf(
-		"Agent started: addr=http://%s, grpc_addr=%s, report=%v, poll=%v, rate_limit=%v, crypto=%t",
+		"Agent started: addr=http://%s, grpc_addr=%s, report=%v, poll=%v, rate_limit=%v, crypto=%t, grpc_tls=%t",
 		finalAddr,
 		finalGRPCAddr,
 		finalReportInterval,
 		finalPollInterval,
 		finalRateLimit,
 		finalCryptoKey != "",
+		finalGRPCCertFile != "",
 	)
 
 	logger, err := zap.NewProduction()
@@ -122,13 +127,12 @@ func main() {
 
 	a := agent.NewAgentWithRateLimit("http://"+finalAddr, finalReportInterval, finalPollInterval, finalRateLimit, finalKey)
 	if finalGRPCAddr != "" {
+		if finalGRPCCertFile == "" {
+			log.Fatal("gRPC TLS certificate file is required when gRPC address is configured")
+		}
+
 		dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		grpcConn, err := grpc.DialContext(
-			dialCtx,
-			finalGRPCAddr,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
-		)
+		grpcConn, err := newReadyGRPCClientConn(dialCtx, finalGRPCAddr, finalGRPCCertFile)
 		dialCancel()
 		if err != nil {
 			log.Fatalf("cannot connect to gRPC server: %v", err)
@@ -153,4 +157,42 @@ func main() {
 	defer stop()
 
 	a.Run(ctx)
+}
+
+func newReadyGRPCClientConn(ctx context.Context, target, certFile string) (*grpc.ClientConn, error) {
+	tlsCredentials, err := credentials.NewClientTLSFromFile(certFile, "")
+	if err != nil {
+		return nil, fmt.Errorf("load gRPC TLS credentials: %w", err)
+	}
+
+	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(tlsCredentials))
+	if err != nil {
+		return nil, err
+	}
+
+	if err = waitForGRPCReady(ctx, conn); err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			log.Printf("cannot close gRPC connection after failed connect: %v", closeErr)
+		}
+		return nil, err
+	}
+
+	return conn, nil
+}
+
+func waitForGRPCReady(ctx context.Context, conn *grpc.ClientConn) error {
+	conn.Connect()
+
+	for {
+		state := conn.GetState()
+		if state == connectivity.Ready {
+			return nil
+		}
+		if state == connectivity.Idle {
+			conn.Connect()
+		}
+		if !conn.WaitForStateChange(ctx, state) {
+			return ctx.Err()
+		}
+	}
 }

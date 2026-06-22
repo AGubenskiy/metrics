@@ -694,7 +694,7 @@ func (c *captureMetricsClient) UpdateMetrics(ctx context.Context, in *pb.UpdateM
 	if md, ok := metadata.FromOutgoingContext(ctx); ok {
 		c.md = md.Copy()
 	}
-	return &pb.UpdateMetricsResponse{}, nil
+	return pb.UpdateMetricsResponse_builder{}.Build(), nil
 }
 
 type temporaryNetError struct{}

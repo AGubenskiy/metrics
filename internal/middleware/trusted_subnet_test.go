@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestTrustedSubnet(t *testing.T) {
@@ -83,5 +86,30 @@ func TestTrustedSubnet(t *testing.T) {
 func TestTrustedSubnetRejectsInvalidCIDR(t *testing.T) {
 	if _, err := TrustedSubnet("192.168.1.0"); err == nil {
 		t.Fatal("expected invalid CIDR error")
+	}
+}
+
+func TestTrustedSubnetLogsWhenDisabled(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+
+	mw, err := TrustedSubnetWithLogger(zap.New(core), "", "/update", "/updates")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/update", nil))
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, rr.Code)
+	}
+	if logs.Len() != 1 {
+		t.Fatalf("expected one startup log entry, got %d", logs.Len())
+	}
+	if got := logs.All()[0].Message; got != "trusted subnet middleware disabled" {
+		t.Fatalf("unexpected log message: %q", got)
 	}
 }

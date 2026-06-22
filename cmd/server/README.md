@@ -61,6 +61,8 @@ GET /ping
 | -d |	DSN подключения к PostgreSQL	| "" |
 | -k |	Ключ для HMAC-проверки тела запроса	| "" |
 | -crypto-key |	Путь к PEM-файлу с приватным ключом для расшифровки запросов агента	| "" |
+| -grpc-cert-file |	Путь к PEM-файлу TLS-сертификата для gRPC	| "" |
+| -grpc-key-file |	Путь к PEM-файлу приватного TLS-ключа для gRPC	| "" |
 | -t |	Доверенная подсеть агентов в CIDR-нотации	| "" |
 | -audit-file |	Путь к файлу audit-лога	| "" |
 | -audit-url |	URL получателя audit-событий	| "" |
@@ -75,6 +77,8 @@ GET /ping
 - `DATABASE_DSN` (имеет приоритет над `-d`)
 - `KEY`
 - `CRYPTO_KEY` — путь к PEM-файлу с приватным ключом
+- `GRPC_CERT_FILE` — путь к PEM-файлу TLS-сертификата для gRPC
+- `GRPC_KEY_FILE` — путь к PEM-файлу приватного TLS-ключа для gRPC
 - `TRUSTED_SUBNET` — доверенная подсеть агентов в CIDR-нотации
 - `AUDIT_FILE`
 - `AUDIT_URL`
@@ -93,6 +97,8 @@ GET /ping
   "database_dsn": "",
   "key": "",
   "crypto_key": "/path/to/private.pem",
+  "grpc_cert_file": "/path/to/grpc-cert.pem",
+  "grpc_key_file": "/path/to/grpc-key.pem",
   "trusted_subnet": "",
   "audit_file": "",
   "audit_url": ""
@@ -104,6 +110,13 @@ GET /ping
 openssl genrsa -out private.pem 2048
 openssl rsa -in private.pem -pubout -out public.pem
 ````
+
+Пример генерации самоподписанного сертификата для gRPC TLS:
+````
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 -keyout grpc-key.pem -out grpc-cert.pem -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+````
+
+Если `GRPC_ADDRESS` задан, серверу нужно передать оба файла: `grpc-cert.pem` через `-grpc-cert-file`/`GRPC_CERT_FILE`/`grpc_cert_file` и `grpc-key.pem` через `-grpc-key-file`/`GRPC_KEY_FILE`/`grpc_key_file`.
 
 ## Выбор хранилища
 Порядок выбора backend при старте:

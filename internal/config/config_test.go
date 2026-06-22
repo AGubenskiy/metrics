@@ -17,6 +17,8 @@ func TestLoadServerConfig(t *testing.T) {
 		"database_dsn": "postgres://user:pass@localhost:5432/metrics",
 		"key": "secret",
 		"crypto_key": "/tmp/private.pem",
+		"grpc_cert_file": "/tmp/grpc-cert.pem",
+		"grpc_key_file": "/tmp/grpc-key.pem",
 		"trusted_subnet": "192.168.0.0/24",
 		"audit_file": "/tmp/audit.log",
 		"audit_url": "http://localhost:9091/audit"
@@ -58,6 +60,12 @@ func TestLoadServerConfig(t *testing.T) {
 	if cfg.CryptoKey == nil || *cfg.CryptoKey != "/tmp/private.pem" {
 		t.Fatalf("unexpected crypto key: %v", cfg.CryptoKey)
 	}
+	if cfg.GRPCCertFile == nil || *cfg.GRPCCertFile != "/tmp/grpc-cert.pem" {
+		t.Fatalf("unexpected gRPC cert file: %v", cfg.GRPCCertFile)
+	}
+	if cfg.GRPCKeyFile == nil || *cfg.GRPCKeyFile != "/tmp/grpc-key.pem" {
+		t.Fatalf("unexpected gRPC key file: %v", cfg.GRPCKeyFile)
+	}
 	if cfg.TrustedSubnet == nil || *cfg.TrustedSubnet != "192.168.0.0/24" {
 		t.Fatalf("unexpected trusted subnet: %v", cfg.TrustedSubnet)
 	}
@@ -78,7 +86,8 @@ func TestLoadAgentConfig(t *testing.T) {
 		"poll_interval": 2,
 		"rate_limit": 4,
 		"key": "secret",
-		"crypto_key": "/tmp/public.pem"
+		"crypto_key": "/tmp/public.pem",
+		"grpc_cert_file": "/tmp/grpc-cert.pem"
 	}`)
 
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -110,6 +119,9 @@ func TestLoadAgentConfig(t *testing.T) {
 	}
 	if cfg.CryptoKey == nil || *cfg.CryptoKey != "/tmp/public.pem" {
 		t.Fatalf("unexpected crypto key: %v", cfg.CryptoKey)
+	}
+	if cfg.GRPCCertFile == nil || *cfg.GRPCCertFile != "/tmp/grpc-cert.pem" {
+		t.Fatalf("unexpected gRPC cert file: %v", cfg.GRPCCertFile)
 	}
 }
 

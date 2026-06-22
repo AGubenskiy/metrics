@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/AGubenskiy/metrics/internal/trustedsubnet"
+	"go.uber.org/zap"
 )
 
 const realIPHeader = trustedsubnet.RealIPHeader
@@ -13,11 +14,24 @@ const realIPHeader = trustedsubnet.RealIPHeader
 // If cidr is empty, the middleware is disabled. Optional path prefixes limit
 // the check to selected endpoints.
 func TrustedSubnet(cidr string, pathPrefixes ...string) (func(http.Handler) http.Handler, error) {
+	return TrustedSubnetWithLogger(zap.NewNop(), cidr, pathPrefixes...)
+}
+
+func TrustedSubnetWithLogger(logger *zap.Logger, cidr string, pathPrefixes ...string) (func(http.Handler) http.Handler, error) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	checker, err := trustedsubnet.NewChecker(cidr)
 	if err != nil {
 		return nil, err
 	}
 	if !checker.Enabled() {
+		logger.Info(
+			"trusted subnet middleware disabled",
+			zap.String("reason", "trusted subnet is not configured"),
+			zap.Strings("path_prefixes", pathPrefixes),
+		)
 		return func(next http.Handler) http.Handler {
 			return next
 		}, nil

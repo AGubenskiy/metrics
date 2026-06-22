@@ -6,6 +6,7 @@ import (
 
 	models "github.com/AGubenskiy/metrics/internal/model"
 	pb "github.com/AGubenskiy/metrics/internal/proto"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -18,10 +19,21 @@ type Server struct {
 	pb.UnimplementedMetricsServer
 
 	service MetricsService
+	logger  *zap.Logger
 }
 
 func NewServer(service MetricsService) *Server {
-	return &Server{service: service}
+	return &Server{
+		service: service,
+		logger:  zap.NewNop(),
+	}
+}
+
+func (s *Server) SetLogger(logger *zap.Logger) {
+	if logger == nil {
+		return
+	}
+	s.logger = logger
 }
 
 func (s *Server) UpdateMetrics(ctx context.Context, req *pb.UpdateMetricsRequest) (*pb.UpdateMetricsResponse, error) {
@@ -39,10 +51,15 @@ func (s *Server) UpdateMetrics(ctx context.Context, req *pb.UpdateMetricsRequest
 	}
 
 	if err := s.service.UpdateMetrics(ctx, metrics); err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		s.logger.Error(
+			"failed to update metrics via gRPC",
+			zap.Int("metrics_count", len(metrics)),
+			zap.Error(err),
+		)
+		return nil, status.Error(codes.Internal, "internal server error")
 	}
 
-	return &pb.UpdateMetricsResponse{}, nil
+	return pb.UpdateMetricsResponse_builder{}.Build(), nil
 }
 
 func metricFromProto(metric *pb.Metric) (models.Metrics, error) {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	_ "github.com/lib/pq"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 var (
@@ -62,6 +64,8 @@ func main() {
 	databaseDSN := flag.String("d", defaultDatabaseDSN, "database connection DSN")
 	key := flag.String("k", "", "hash key")
 	cryptoKey := flag.String("crypto-key", "", "path to private crypto key")
+	grpcCertFile := flag.String("grpc-cert-file", "", "path to gRPC TLS certificate PEM file")
+	grpcKeyFile := flag.String("grpc-key-file", "", "path to gRPC TLS private key PEM file")
 	trustedSubnet := flag.String("t", "", "trusted subnet in CIDR notation")
 	auditFile := flag.String("audit-file", "", "path to audit log file")
 	auditURL := flag.String("audit-url", "", "audit receiver URL")
@@ -114,6 +118,8 @@ func main() {
 	finalDatabaseDSN := appconfig.ResolveString([]string{"DATABASE_DSN"}, setFlags["d"], *databaseDSN, fileConfig.DatabaseDSN, defaultDatabaseDSN)
 	finalKey := appconfig.ResolveString([]string{"KEY"}, setFlags["k"], *key, fileConfig.Key, "")
 	finalCryptoKey := appconfig.ResolveString([]string{"CRYPTO_KEY"}, setFlags["crypto-key"], *cryptoKey, fileConfig.CryptoKey, "")
+	finalGRPCCertFile := appconfig.ResolveString([]string{"GRPC_CERT_FILE"}, setFlags["grpc-cert-file"], *grpcCertFile, fileConfig.GRPCCertFile, "")
+	finalGRPCKeyFile := appconfig.ResolveString([]string{"GRPC_KEY_FILE"}, setFlags["grpc-key-file"], *grpcKeyFile, fileConfig.GRPCKeyFile, "")
 	finalTrustedSubnet := appconfig.ResolveString([]string{"TRUSTED_SUBNET"}, setFlags["t"], *trustedSubnet, fileConfig.TrustedSubnet, "")
 	finalAuditFile := appconfig.ResolveString([]string{"AUDIT_FILE"}, setFlags["audit-file"], *auditFile, fileConfig.AuditFile, "")
 	finalAuditURL := appconfig.ResolveString([]string{"AUDIT_URL"}, setFlags["audit-url"], *auditURL, fileConfig.AuditURL, "")
@@ -125,7 +131,17 @@ func main() {
 		setFlags["r"] ||
 		fileConfig.HasFileStorageSettings()
 
-	trustedSubnetMiddleware, err := middleware.TrustedSubnet(finalTrustedSubnet, "/update", "/updates")
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("cannot initialize logger: %v", err)
+	}
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			log.Printf("logger sync error: %v", err)
+		}
+	}()
+
+	trustedSubnetMiddleware, err := middleware.TrustedSubnetWithLogger(logger, finalTrustedSubnet, "/update", "/updates")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -182,7 +198,7 @@ func main() {
 	defer stopAndFlush()
 
 	metricsService := service.NewMetrics(store)
-	grpcServer, grpcErrCh, err := startGRPCServer(finalGRPCAddr, finalTrustedSubnet, metricsService)
+	grpcServer, grpcErrCh, err := startGRPCServer(finalGRPCAddr, finalTrustedSubnet, finalGRPCCertFile, finalGRPCKeyFile, metricsService, logger)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -206,16 +222,6 @@ func main() {
 	}()
 
 	h := handler.NewHandlerWithAudit(metricsService, pinger, auditPublisher)
-	logger, err := zap.NewProduction()
-	if err != nil {
-		log.Fatalf("cannot initialize logger: %v", err)
-	}
-	defer func() {
-		if err := logger.Sync(); err != nil {
-			log.Printf("logger sync error: %v", err)
-		}
-	}()
-
 	r := chi.NewRouter()
 	r.Use(loggerMiddleware.WithLogging(logger))
 	r.Use(trustedSubnetMiddleware)
@@ -253,7 +259,7 @@ func main() {
 		finalAuditURL != "",
 	)
 	if finalGRPCAddr != "" {
-		log.Printf("gRPC server started on %s", finalGRPCAddr)
+		log.Printf("gRPC server started on %s with TLS", finalGRPCAddr)
 	}
 
 	server := &http.Server{
@@ -295,9 +301,18 @@ func main() {
 	}
 }
 
-func startGRPCServer(addr, trustedSubnet string, metricsService grpcmetrics.MetricsService) (*grpc.Server, <-chan error, error) {
+func startGRPCServer(addr, trustedSubnet, certFile, keyFile string, metricsService grpcmetrics.MetricsService, logger *zap.Logger) (*grpc.Server, <-chan error, error) {
 	if addr == "" {
 		return nil, nil, nil
+	}
+
+	if certFile == "" || keyFile == "" {
+		return nil, nil, fmt.Errorf("gRPC TLS certificate and private key files are required when gRPC server is enabled")
+	}
+
+	tlsCredentials, err := credentials.NewServerTLSFromFile(certFile, keyFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load gRPC TLS credentials: %w", err)
 	}
 
 	trustedSubnetInterceptor, err := grpcmetrics.TrustedSubnetUnaryInterceptor(trustedSubnet)
@@ -310,8 +325,13 @@ func startGRPCServer(addr, trustedSubnet string, metricsService grpcmetrics.Metr
 		return nil, nil, err
 	}
 
-	server := grpc.NewServer(grpc.UnaryInterceptor(trustedSubnetInterceptor))
-	pb.RegisterMetricsServer(server, grpcmetrics.NewServer(metricsService))
+	server := grpc.NewServer(
+		grpc.Creds(tlsCredentials),
+		grpc.UnaryInterceptor(trustedSubnetInterceptor),
+	)
+	metricsServer := grpcmetrics.NewServer(metricsService)
+	metricsServer.SetLogger(logger)
+	pb.RegisterMetricsServer(server, metricsServer)
 
 	errCh := make(chan error, 1)
 	go func() {

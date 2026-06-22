@@ -84,6 +84,8 @@ type Server struct {
 	DatabaseDSN     *string          `json:"database_dsn"`
 	Key             *string          `json:"key"`
 	CryptoKey       *string          `json:"crypto_key"`
+	GRPCCertFile    *string          `json:"grpc_cert_file"`
+	GRPCKeyFile     *string          `json:"grpc_key_file"`
 	TrustedSubnet   *string          `json:"trusted_subnet"`
 	AuditFile       *string          `json:"audit_file"`
 	AuditURL        *string          `json:"audit_url"`
@@ -111,6 +113,7 @@ type Agent struct {
 	RateLimit      *int             `json:"rate_limit"`
 	Key            *string          `json:"key"`
 	CryptoKey      *string          `json:"crypto_key"`
+	GRPCCertFile   *string          `json:"grpc_cert_file"`
 }
 
 func LoadServer(path string) (Server, error) {

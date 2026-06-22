@@ -527,14 +527,10 @@ func (a *Agent) updateMetricsGRPC(req *pb.UpdateMetricsRequest) error {
 }
 
 func buildUpdateMetricsRequest(metrics []models.Metrics) (*pb.UpdateMetricsRequest, error) {
-	req := &pb.UpdateMetricsRequest{
-		Metrics: make([]*pb.Metric, 0, len(metrics)),
-	}
+	protoMetrics := make([]*pb.Metric, 0, len(metrics))
 
 	for _, metric := range metrics {
-		protoMetric := &pb.Metric{
-			Id: metric.ID,
-		}
+		protoMetric := pb.Metric_builder{Id: metric.ID}
 
 		switch metric.MType {
 		case models.Gauge:
@@ -553,10 +549,10 @@ func buildUpdateMetricsRequest(metrics []models.Metrics) (*pb.UpdateMetricsReque
 			return nil, fmt.Errorf("unsupported metric type %q", metric.MType)
 		}
 
-		req.Metrics = append(req.Metrics, protoMetric)
+		protoMetrics = append(protoMetrics, protoMetric.Build())
 	}
 
-	return req, nil
+	return pb.UpdateMetricsRequest_builder{Metrics: protoMetrics}.Build(), nil
 }
 
 func (a *Agent) sendMetric(metric models.Metrics) bool {
