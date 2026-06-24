@@ -31,6 +31,9 @@ func NewServer(service MetricsService) *Server {
 
 func (s *Server) SetLogger(logger *zap.Logger) {
 	if logger == nil {
+		if s.logger != nil {
+			s.logger.Warn("skipped setting gRPC metrics server logger: logger is nil")
+		}
 		return
 	}
 	s.logger = logger

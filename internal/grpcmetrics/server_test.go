@@ -52,6 +52,21 @@ func TestServerUpdateMetricsRejectsInvalidBatch(t *testing.T) {
 	}
 }
 
+func TestServerSetLoggerWarnsOnNilLogger(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	server := NewServer(service.NewMetrics(storage.NewMemStorage()))
+	server.SetLogger(zap.New(core))
+
+	server.SetLogger(nil)
+
+	if got := logs.Len(); got != 1 {
+		t.Fatalf("expected nil logger warning to be logged once, got %d log entries", got)
+	}
+	if got := logs.All()[0].Message; got != "skipped setting gRPC metrics server logger: logger is nil" {
+		t.Fatalf("unexpected log message: %q", got)
+	}
+}
+
 func TestServerUpdateMetricsHidesInternalErrorDetails(t *testing.T) {
 	core, logs := observer.New(zap.ErrorLevel)
 	sensitiveErr := errors.New("postgres password=secret host=internal-db")

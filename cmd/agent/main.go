@@ -167,7 +167,7 @@ func newReadyGRPCClientConn(ctx context.Context, target, certFile string) (*grpc
 
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(tlsCredentials))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create gRPC client: %w", err)
 	}
 
 	if err = waitForGRPCReady(ctx, conn); err != nil {
