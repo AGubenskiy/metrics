@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package metrics;
+
+option go_package = "github.com/AGubenskiy/metrics/internal/proto";
+
+// Metric defines a single metric.
+message Metric {
+  string id = 1;
+
+  // MType defines the metric type.
+  enum MType {
+    GAUGE = 0;
+    COUNTER = 1;
+  }
+
+  MType type = 2;
+  int64 delta = 3;
+  double value = 4;
+}
+
+// UpdateMetricsRequest contains metrics to update.
+message UpdateMetricsRequest {
+  repeated Metric metrics = 1;
+}
+
+// UpdateMetricsResponse is an empty acknowledgement.
+message UpdateMetricsResponse {}
+
+// Metrics defines metric operations.
+service Metrics {
+  rpc UpdateMetrics(UpdateMetricsRequest) returns (UpdateMetricsResponse);
+}

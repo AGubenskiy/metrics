@@ -20,11 +20,16 @@ import (
 
 	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	models "github.com/AGubenskiy/metrics/internal/model"
+	pb "github.com/AGubenskiy/metrics/internal/proto"
 	"github.com/AGubenskiy/metrics/internal/signing"
+	"github.com/AGubenskiy/metrics/internal/trustedsubnet"
 	gojson "github.com/goccy/go-json"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // Agent collects runtime and system metrics and reports them to the metrics server.
@@ -38,6 +43,7 @@ type Agent struct {
 	gauges      map[string]float64
 	counters    map[string]int64
 	httpClient  *http.Client
+	grpcClient  pb.MetricsClient
 	logger      *zap.Logger
 	retryDelays []time.Duration
 	sleep       func(time.Duration)
@@ -47,11 +53,15 @@ type Agent struct {
 	readMemStats      func(*runtime.MemStats)
 	readVirtualMemory func() (*mem.VirtualMemoryStat, error)
 	readCPUPercent    func() ([]float64, error)
+	realIP            string
 
 	batchDisabled   atomic.Bool
 	metricsVersion  atomic.Uint64
 	reportedVersion atomic.Uint64
 }
+
+const realIPHeader = trustedsubnet.RealIPHeader
+const grpcRequestTimeout = 5 * time.Second
 
 // NewAgent creates an agent with single-request reporting mode.
 func NewAgent(serverAddr string, reportInterval int, pollInterval int, key string) *Agent {
@@ -85,6 +95,7 @@ func NewAgentWithRateLimit(serverAddr string, reportInterval int, pollInterval i
 		readCPUPercent: func() ([]float64, error) {
 			return cpu.Percent(0, true)
 		},
+		realIP: detectHostIP(serverAddr),
 	}
 }
 
@@ -99,6 +110,17 @@ func (a *Agent) SetLogger(logger *zap.Logger) {
 // SetEncryptionPublicKey enables encryption for outgoing request bodies.
 func (a *Agent) SetEncryptionPublicKey(key *rsa.PublicKey) {
 	a.publicKey = key
+}
+
+// SetGRPCClient enables gRPC batch reporting.
+func (a *Agent) SetGRPCClient(client pb.MetricsClient, serverAddr string) {
+	if client == nil {
+		return
+	}
+	a.grpcClient = client
+	if ip := detectHostIP(serverAddr); ip != "" {
+		a.realIP = ip
+	}
 }
 
 // Run starts metric collection and reporting loops and blocks until ctx is cancelled.
@@ -412,6 +434,10 @@ func (a *Agent) processJob(job sendJob) sendResult {
 
 // sendMetricsBatch returns whether the batch was delivered or should fallback to old single-metric API.
 func (a *Agent) sendMetricsBatch(metrics []models.Metrics) sendResult {
+	if a.grpcClient != nil {
+		return a.sendMetricsBatchGRPC(metrics)
+	}
+
 	logFields := []zap.Field{
 		zap.Int("metrics_count", len(metrics)),
 	}
@@ -445,6 +471,88 @@ func (a *Agent) sendMetricsBatch(metrics []models.Metrics) sendResult {
 	}
 
 	return sendResult{success: true}
+}
+
+func (a *Agent) sendMetricsBatchGRPC(metrics []models.Metrics) sendResult {
+	logFields := []zap.Field{
+		zap.Int("metrics_count", len(metrics)),
+	}
+
+	req, err := buildUpdateMetricsRequest(metrics)
+	if err != nil {
+		a.logger.Error("failed to build gRPC metrics batch", append(logFields, zap.Error(err))...)
+		return sendResult{}
+	}
+
+	if err = a.updateMetricsGRPCWithRetry(req); err != nil {
+		a.logger.Error("failed to send gRPC metrics batch", append(logFields, zap.Error(err))...)
+		return sendResult{}
+	}
+
+	return sendResult{success: true}
+}
+
+func (a *Agent) updateMetricsGRPCWithRetry(req *pb.UpdateMetricsRequest) error {
+	err := a.updateMetricsGRPC(req)
+	if err == nil || !isRetriableGRPCError(err) {
+		return err
+	}
+
+	lastErr := err
+	for _, delay := range a.retryDelays {
+		a.sleep(delay)
+		err = a.updateMetricsGRPC(req)
+		if err == nil {
+			return nil
+		}
+		if !isRetriableGRPCError(err) {
+			return err
+		}
+		lastErr = err
+	}
+
+	return lastErr
+}
+
+func (a *Agent) updateMetricsGRPC(req *pb.UpdateMetricsRequest) error {
+	ctx, cancel := context.WithTimeout(context.Background(), grpcRequestTimeout)
+	defer cancel()
+
+	if a.realIP != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, trustedsubnet.RealIPMetadataKey, a.realIP)
+	}
+
+	_, err := a.grpcClient.UpdateMetrics(ctx, req)
+	return err
+}
+
+func buildUpdateMetricsRequest(metrics []models.Metrics) (*pb.UpdateMetricsRequest, error) {
+	protoMetrics := make([]*pb.Metric, 0, len(metrics))
+
+	for _, metric := range metrics {
+		protoMetric := pb.Metric_builder{Id: metric.ID}
+
+		switch metric.MType {
+		case models.Gauge:
+			if metric.Value == nil {
+				return nil, fmt.Errorf("gauge value is required")
+			}
+			protoMetric.Type = pb.Metric_GAUGE
+			protoMetric.Value = *metric.Value
+		case models.Counter:
+			if metric.Delta == nil {
+				return nil, fmt.Errorf("counter delta is required")
+			}
+			protoMetric.Type = pb.Metric_COUNTER
+			protoMetric.Delta = *metric.Delta
+		default:
+			return nil, fmt.Errorf("unsupported metric type %q", metric.MType)
+		}
+
+		protoMetrics = append(protoMetrics, protoMetric.Build())
+	}
+
+	return pb.UpdateMetricsRequest_builder{Metrics: protoMetrics}.Build(), nil
 }
 
 func (a *Agent) sendMetric(metric models.Metrics) bool {
@@ -495,6 +603,7 @@ func (a *Agent) sendCompressedJSON(path string, body []byte) (int, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set(realIPHeader, a.realIP)
 	if encrypted {
 		req.Header.Set(cryptoutil.HeaderName, cryptoutil.HeaderValue)
 	}
@@ -614,6 +723,140 @@ func isRetriableAgentError(err error) bool {
 	}
 
 	return false
+}
+
+func isRetriableGRPCError(err error) bool {
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
+		return true
+	default:
+		return false
+	}
+}
+
+func detectHostIP(serverAddr string) string {
+	if ip := localIPForServer(serverAddr); ip != "" {
+		return ip
+	}
+	if ip := interfaceIP(false); ip != "" {
+		return ip
+	}
+	if ip := interfaceIP(true); ip != "" {
+		return ip
+	}
+	return "127.0.0.1"
+}
+
+func localIPForServer(serverAddr string) string {
+	addr := strings.TrimSpace(serverAddr)
+	parsedURL, err := url.Parse(addr)
+	if err != nil {
+		return ""
+	}
+
+	host := parsedURL.Hostname()
+	port := parsedURL.Port()
+	if host == "" && !strings.Contains(addr, "://") {
+		host, port = splitHostPort(addr)
+	}
+	if host == "" {
+		return ""
+	}
+	if strings.EqualFold(host, "localhost") {
+		return "127.0.0.1"
+	}
+
+	targetIP := net.ParseIP(host)
+	if targetIP == nil {
+		return ""
+	}
+	if targetIP.IsLoopback() {
+		return normalizedIPString(targetIP)
+	}
+
+	if port == "" {
+		port = defaultPort(parsedURL.Scheme)
+	}
+
+	conn, err := net.DialTimeout("udp", net.JoinHostPort(targetIP.String(), port), 100*time.Millisecond)
+	if err != nil {
+		return ""
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	udpAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || udpAddr.IP == nil {
+		return ""
+	}
+	return normalizedIPString(udpAddr.IP)
+}
+
+func splitHostPort(address string) (string, string) {
+	host, port, err := net.SplitHostPort(address)
+	if err == nil {
+		return host, port
+	}
+
+	return strings.Trim(address, "[]"), ""
+}
+
+func defaultPort(scheme string) string {
+	if strings.EqualFold(scheme, "https") {
+		return "443"
+	}
+	return "80"
+}
+
+func interfaceIP(allowLoopback bool) string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP == nil {
+			continue
+		}
+
+		ip := ipNet.IP
+		if ip.IsLoopback() != allowLoopback {
+			continue
+		}
+		if !allowLoopback && !ip.IsGlobalUnicast() {
+			continue
+		}
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4.String()
+		}
+	}
+
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP == nil {
+			continue
+		}
+
+		ip := ipNet.IP
+		if ip.IsLoopback() != allowLoopback {
+			continue
+		}
+		if !allowLoopback && !ip.IsGlobalUnicast() {
+			continue
+		}
+		return ip.String()
+	}
+
+	return ""
+}
+
+func normalizedIPString(ip net.IP) string {
+	if ipv4 := ip.To4(); ipv4 != nil {
+		return ipv4.String()
+	}
+	return ip.String()
 }
 
 type sendJob struct {

@@ -10,12 +10,16 @@ func TestLoadServerConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.json")
 	data := []byte(`{
 		"address": "localhost:9090",
+		"grpc_address": "localhost:9091",
 		"restore": false,
 		"store_interval": "1s",
 		"store_file": "/tmp/metrics.json",
 		"database_dsn": "postgres://user:pass@localhost:5432/metrics",
 		"key": "secret",
 		"crypto_key": "/tmp/private.pem",
+		"grpc_cert_file": "/tmp/grpc-cert.pem",
+		"grpc_key_file": "/tmp/grpc-key.pem",
+		"trusted_subnet": "192.168.0.0/24",
 		"audit_file": "/tmp/audit.log",
 		"audit_url": "http://localhost:9091/audit"
 	}`)
@@ -31,6 +35,9 @@ func TestLoadServerConfig(t *testing.T) {
 
 	if cfg.Address == nil || *cfg.Address != "localhost:9090" {
 		t.Fatalf("unexpected address: %v", cfg.Address)
+	}
+	if cfg.GRPCAddress == nil || *cfg.GRPCAddress != "localhost:9091" {
+		t.Fatalf("unexpected gRPC address: %v", cfg.GRPCAddress)
 	}
 	if cfg.Restore == nil || *cfg.Restore {
 		t.Fatalf("unexpected restore: %v", cfg.Restore)
@@ -53,6 +60,15 @@ func TestLoadServerConfig(t *testing.T) {
 	if cfg.CryptoKey == nil || *cfg.CryptoKey != "/tmp/private.pem" {
 		t.Fatalf("unexpected crypto key: %v", cfg.CryptoKey)
 	}
+	if cfg.GRPCCertFile == nil || *cfg.GRPCCertFile != "/tmp/grpc-cert.pem" {
+		t.Fatalf("unexpected gRPC cert file: %v", cfg.GRPCCertFile)
+	}
+	if cfg.GRPCKeyFile == nil || *cfg.GRPCKeyFile != "/tmp/grpc-key.pem" {
+		t.Fatalf("unexpected gRPC key file: %v", cfg.GRPCKeyFile)
+	}
+	if cfg.TrustedSubnet == nil || *cfg.TrustedSubnet != "192.168.0.0/24" {
+		t.Fatalf("unexpected trusted subnet: %v", cfg.TrustedSubnet)
+	}
 	if cfg.AuditFile == nil || *cfg.AuditFile != "/tmp/audit.log" {
 		t.Fatalf("unexpected audit file: %v", cfg.AuditFile)
 	}
@@ -65,11 +81,13 @@ func TestLoadAgentConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
 	data := []byte(`{
 		"address": "localhost:9090",
+		"grpc_address": "localhost:9091",
 		"report_interval": "3s",
 		"poll_interval": 2,
 		"rate_limit": 4,
 		"key": "secret",
-		"crypto_key": "/tmp/public.pem"
+		"crypto_key": "/tmp/public.pem",
+		"grpc_cert_file": "/tmp/grpc-cert.pem"
 	}`)
 
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -83,6 +101,9 @@ func TestLoadAgentConfig(t *testing.T) {
 
 	if cfg.Address == nil || *cfg.Address != "localhost:9090" {
 		t.Fatalf("unexpected address: %v", cfg.Address)
+	}
+	if cfg.GRPCAddress == nil || *cfg.GRPCAddress != "localhost:9091" {
+		t.Fatalf("unexpected gRPC address: %v", cfg.GRPCAddress)
 	}
 	if cfg.ReportInterval == nil || cfg.ReportInterval.Int() != 3 {
 		t.Fatalf("unexpected report interval: %v", cfg.ReportInterval)
@@ -98,6 +119,9 @@ func TestLoadAgentConfig(t *testing.T) {
 	}
 	if cfg.CryptoKey == nil || *cfg.CryptoKey != "/tmp/public.pem" {
 		t.Fatalf("unexpected crypto key: %v", cfg.CryptoKey)
+	}
+	if cfg.GRPCCertFile == nil || *cfg.GRPCCertFile != "/tmp/grpc-cert.pem" {
+		t.Fatalf("unexpected gRPC cert file: %v", cfg.GRPCCertFile)
 	}
 }
 

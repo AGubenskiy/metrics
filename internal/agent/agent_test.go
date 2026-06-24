@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,9 +21,12 @@ import (
 
 	"github.com/AGubenskiy/metrics/internal/cryptoutil"
 	models "github.com/AGubenskiy/metrics/internal/model"
+	pb "github.com/AGubenskiy/metrics/internal/proto"
 	"github.com/AGubenskiy/metrics/internal/signing"
 	gojson "github.com/goccy/go-json"
 	"github.com/shirou/gopsutil/v3/mem"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 func runReportWithWorkerPool(t *testing.T, a *Agent) {
@@ -182,6 +186,65 @@ func TestReportSendsJSONToUpdateEndpoint(t *testing.T) {
 
 	if !foundGauge || !foundCounter {
 		t.Fatalf("sent metrics mismatch: %+v", metrics)
+	}
+}
+
+func TestReportSetsRealIPHeader(t *testing.T) {
+	var gotRealIP string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRealIP = r.Header.Get(realIPHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := NewAgent(srv.URL, 10, 5, "")
+	a.gauges["Alloc"] = 1
+
+	runReportWithWorkerPool(t, a)
+
+	if gotRealIP == "" {
+		t.Fatalf("expected %s header to be set", realIPHeader)
+	}
+	if ip := net.ParseIP(gotRealIP); ip == nil {
+		t.Fatalf("expected %s header to contain IP address, got %q", realIPHeader, gotRealIP)
+	}
+}
+
+func TestReportSendsGRPCBatchWithRealIPMetadata(t *testing.T) {
+	client := &captureMetricsClient{}
+	a := NewAgent("http://localhost:8080", 10, 5, "")
+	a.SetGRPCClient(client, "localhost:9091")
+
+	gaugeValue := 12.5
+	counterDelta := int64(3)
+	result := a.sendMetricsBatch([]models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: &gaugeValue},
+		{ID: "PollCount", MType: models.Counter, Delta: &counterDelta},
+	})
+
+	if !result.success {
+		t.Fatal("expected gRPC batch send to succeed")
+	}
+	if client.req == nil {
+		t.Fatal("expected gRPC request")
+	}
+	if len(client.req.GetMetrics()) != 2 {
+		t.Fatalf("expected 2 metrics, got %d", len(client.req.GetMetrics()))
+	}
+	if got := client.req.GetMetrics()[0]; got.GetId() != "Alloc" || got.GetType() != pb.Metric_GAUGE || got.GetValue() != gaugeValue {
+		t.Fatalf("unexpected gauge metric: %+v", got)
+	}
+	if got := client.req.GetMetrics()[1]; got.GetId() != "PollCount" || got.GetType() != pb.Metric_COUNTER || got.GetDelta() != counterDelta {
+		t.Fatalf("unexpected counter metric: %+v", got)
+	}
+
+	realIPValues := client.md.Get("x-real-ip")
+	if len(realIPValues) != 1 {
+		t.Fatalf("expected x-real-ip metadata, got %v", realIPValues)
+	}
+	if ip := net.ParseIP(realIPValues[0]); ip == nil {
+		t.Fatalf("expected x-real-ip metadata to contain IP address, got %q", realIPValues[0])
 	}
 }
 
@@ -619,6 +682,19 @@ type roundTripFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+type captureMetricsClient struct {
+	req *pb.UpdateMetricsRequest
+	md  metadata.MD
+}
+
+func (c *captureMetricsClient) UpdateMetrics(ctx context.Context, in *pb.UpdateMetricsRequest, _ ...grpc.CallOption) (*pb.UpdateMetricsResponse, error) {
+	c.req = in
+	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+		c.md = md.Copy()
+	}
+	return pb.UpdateMetricsResponse_builder{}.Build(), nil
 }
 
 type temporaryNetError struct{}
